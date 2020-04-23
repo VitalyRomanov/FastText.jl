@@ -1,16 +1,17 @@
-# module SkipGramCorpus
-cd("/Users/LTV/dev/FastText.jl/")
-include("Vocab.jl")
+module SkipGramCorpus
+# cd("/Users/LTV/dev/FastText.jl/")
+# include("Vocab.jl")
 include("LanguageTools.jl")
 
-FILENAME = "wiki_01"
+# FILENAME = "wiki_01"
 
-using .Vocabulary
+# using .Vocabulary
 using .LanguageTools
 using StatsBase
 
+export SGCorpus
 
-mutable struct SGCorpus
+struct SGCorpus
     file
     vocab
     win_size
@@ -71,21 +72,22 @@ UNK_TOKEN = "UNK"
     end
     return chnl
 end
-
-v = Vocab()
-
-corpus_file = open(FILENAME)
-
-for line in eachline(corpus_file)
-    tokens = tokenize(line)
-    learnVocab!(v, tokens)
 end
 
-v = prune(v, 1000)
+# v = Vocab()
 
-c = SGCorpus(corpus_file, v)
+# corpus_file = open(FILENAME)
 
-chnl = c()
-for item in chnl
-    @show item
-end
+# for line in eachline(corpus_file)
+#     tokens = tokenize(line)
+#     learnVocab!(v, tokens)
+# end
+
+# v = prune(v, 1000)
+
+# c = SGCorpus(corpus_file, v)
+
+# chnl = c()
+# for item in chnl
+#     @show item
+# end

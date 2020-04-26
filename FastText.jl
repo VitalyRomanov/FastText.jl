@@ -33,9 +33,9 @@ FastText(vocab::Vocab,
         min_ngram::Int64=3, 
         max_ngram::Int64=5) = 
     FastText(
-        rand(length(vocab), dim_s), 
-        rand(length(vocab), dim_s), 
-        rand(bucket_size, dim_s),
+        rand(dim_s, length(vocab)), 
+        rand(dim_s, length(vocab)), 
+        rand(dim_s, bucket_size),
         vocab,
         min_ngram,
         max_ngram
@@ -76,7 +76,7 @@ in_pieces(word, min_ngram::Integer, max_ngram::Integer) = begin
     pieces
 end
 
-hash_piece(x, voc_size) = hash(x) % voc_size + 1
+hash_piece(x, voc_size)::Int64 = hash(x) % voc_size + 1
 
 # Flux.@functor FastText
 

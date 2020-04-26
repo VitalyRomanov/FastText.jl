@@ -2,10 +2,10 @@
 # cd("/Users/LTV/dev/FastText.jl/")
 # include("Vocab.jl")
 include("LanguageTools.jl")
-@everywhere include("FastText.jl")
+include("FastText.jl")
 
-@everywhere using .FT
-@everywhere using SharedArrays
+using .FT
+using SharedArrays
 
 FILENAME = "wiki_01"
 
@@ -15,7 +15,7 @@ using StatsBase
 
 # export SGCorpus
 
-@everywhere mutable struct SGCorpus
+mutable struct SGCorpus
     file
     vocab
     win_size
@@ -31,7 +31,7 @@ using StatsBase
     learning_rate::Float32
 end
 
-@everywhere struct ft_params
+struct ft_params
     in
     out
     buckets
@@ -164,32 +164,52 @@ end
 
 get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
-@everywhere sigm(x) = (1 ./ (1 + exp.(-x)))
+sigm(x) = (1 ./ (1 + exp.(-x)))
 
-@everywhere update_grads!(atomic_in, atomic_out, in_grad, out_grad, in, out, in_id, out_id, label, lr) = begin
+update_grads!(in_grad::SharedArray{Float32,2}, 
+                out_grad::SharedArray{Float32,2}, 
+                in::SharedArray{Float32,2}, 
+                out::SharedArray{Float32,2}, 
+                in_id::Int64, 
+                out_id::Int64, 
+                label::Float32, 
+                lr::Float32) = begin
 
-    while (atomic_in[in_id] || atomic_out[out_id])
-        sleep(0.00001)
-    end
+    # while (atomic_in[in_id] || atomic_out[out_id])
+    #     sleep(0.00001)
+    # end
 
-    atomic_in[in_id] = true
-    atomic_out[out_id] = true
+    # atomic_in[in_id] = true
+    # atomic_out[out_id] = true
+
+    # TODO
+    # flexible dimensionality
 
     act::Float32 = 0.
-    for i in 1:300
-        act += in[in_id, i] .* out[out_id, i]
+    i = 1
+    while i <= 300
+        @inbounds act += in[i, in_id] .* out[i, out_id]
+        i += 1
     end
     act = sigm(act .* label)
 
     w::Float32 = - label .* (1 .- act) .* lr
 
-    for i in 1:300
-        in[in_id, i] += out[out_id, i] .* w
-        out[out_id, i] += in[in_id, i] .* w
+    i = 1
+    while i <= 300
+        @inbounds in_old = in[i, in_id]
+        @inbounds out_old = out[i, out_id]
+        @inbounds in[i, in_id] = in_old .+ out_old .* w
+        @inbounds out[i, out_id] = out_old .+ in_old .* w
+        i += 1
     end
 
-    atomic_in[in_id] = false
-    atomic_out[out_id] = false
+
+    # @inbounds in_grad[:, in_id] .+= @views in[:, in_id] .+ out[:, out_id] .* w
+    # @inbounds out_grad[:, out_id] .+= @views out[:, out_id] .+ in[:, in_id] .* w
+
+    # atomic_in[in_id] = false
+    # atomic_out[out_id] = false
 
     # # println("Views")
     # in_vec = in[in_id, :]
@@ -209,6 +229,8 @@ get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
     # grad_in, grad_out
 end
 
+
+
 process_context(c::SGCorpus, tokens, pos) = begin
     context = tokens[pos]
     in_id = get_w_id(c, context)
@@ -216,13 +238,21 @@ process_context(c::SGCorpus, tokens, pos) = begin
 
     # TODO 
     # make parallel
+    # maybe need to make parallel at a level of process_context
+    # to reduce collisions. but nteed to move a lot of stuff into 
+    # workers. neet to restructure all structures...
+    
+    POS_LBL::Float32 = 1.
+    NEG_LBL::Float32 = -1.
 
-    for offset in max(1, pos-c.win_size):min(length(tokens), pos+c.win_size)
-        out_id = get_w_id(c, tokens[offset])
-        update_grads!(c.shared_params.atomic_in, c.shared_params.atomic_out, c.shared_grad.in, c.shared_grad.out, c.shared_params.in, c.shared_params.out, in_id, out_id, 1., c.learning_rate)
+    out_ids = [get_w_id(c, tokens[offset]) for offset in max(1, pos-c.win_size):min(length(tokens), pos+c.win_size)]
+
+    
+    for out_id in out_ids
+        update_grads!(c.shared_grad.in, c.shared_grad.out, c.shared_params.in, c.shared_params.out, in_id, out_id, POS_LBL, c.learning_rate)
 
         for bucket in buckets
-            update_grads!(c.shared_params.atomic_buckets, c.shared_params.atomic_out, c.shared_grad.buckets, c.shared_grad.out, c.shared_params.buckets, c.shared_params.out, bucket, out_id, 1., c.learning_rate)
+            update_grads!(c.shared_grad.buckets, c.shared_grad.out, c.shared_params.buckets, c.shared_params.out, bucket, out_id, POS_LBL, c.learning_rate)
         end
 
     end
@@ -231,10 +261,11 @@ process_context(c::SGCorpus, tokens, pos) = begin
     # @time neg = get_negative(c, c.neg_samples_per_context)
     for n in neg
         neg_out_id = n
-        update_grads!(c.shared_params.atomic_in, c.shared_params.atomic_out, c.shared_grad.in, c.shared_grad.out, c.shared_params.in, c.shared_params.out, in_id, neg_out_id, -1., c.learning_rate)
+        c.shared_grad.in, c.shared_grad.out
+        update_grads!(c.shared_grad.in, c.shared_grad.out, c.shared_params.in, c.shared_params.out, in_id, neg_out_id, NEG_LBL, c.learning_rate)
 
         for bucket in buckets
-            update_grads!(c.shared_params.atomic_buckets, c.shared_params.atomic_out, c.shared_grad.buckets, c.shared_grad.out, c.shared_params.buckets, c.shared_params.out, bucket, neg_out_id, -1., c.learning_rate)
+            update_grads!(c.shared_grad.buckets, c.shared_grad.out, c.shared_params.buckets, c.shared_params.out, bucket, neg_out_id, NEG_LBL, c.learning_rate)
         end
     end
     # for _ in 1:c.neg_samples_per_context

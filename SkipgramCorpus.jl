@@ -38,34 +38,58 @@ init_negative_sampling(c::SGCorpus) = begin
     probs .^= 3/4
     # TODO
     # need only ids, remove work lookup
-    (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
+    # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
+    (size) -> StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size)
 end
 
 UNK_TOKEN = "UNK"
 
+process_line(c::SGCorpus, line) = begin
+    tokens = tokenize(line)
+    tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
+    tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
+    tokens
+end
+
+generate_positive(c::SGCorpus, ch, tokens, pos) = begin
+    for offset in -c.win_size:c.win_size
+        if offset == 0; continue; end
+        if ((pos + offset) < 1 || (pos + offset) > length(tokens)); continue; end
+        put!(ch, ((tokens[pos], tokens[pos+offset]), 1.))
+        # println("$(tokens[pos])\t$(tokens[pos+offset])\t1")
+    end
+end
+
+generate_negative(c::SGCorpus, ch, neg_sampler, tokens, pos) = begin
+    for neg in neg_sampler(c.neg_samples_per_context)
+        put!(ch, ((tokens[pos], neg), 0.))
+        # println("$(tokens[pos])\t$(neg)\t0")
+    end
+end
+
 (c::SGCorpus)() = begin
     neg_sampler = init_negative_sampling(c)
+
+    # TODO 
+    # this procedure generates 300 w/s. It is impossible to be faster than Gensim at this rate
+
 
     chnl = Channel() do ch
         seekstart(c.file)
         for (ind, line) in enumerate(eachline(c.file))
             # subsampling procedure 
             # https://arxiv.org/pdf/1310.4546.pdf
-            tokens = tokenize(line)
-            tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
-            tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
+            # tokens = tokenize(line)
+            # tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
+            # tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
+            # println("Tokens")
+            @time tokens = process_line(c, line)
             if length(tokens) > 1
                 for pos in 1:length(tokens)
-                    for offset in -c.win_size:c.win_size
-                        if offset == 0; continue; end
-                        if ((pos + offset) < 1 || (pos + offset) > length(tokens)); continue; end
-                        put!(ch, ([tokens[pos] tokens[pos+offset]], 1.))
-                        # println("$(tokens[pos])\t$(tokens[pos+offset])\t1")
-                    end
-                    for neg in neg_sampler(c.neg_samples_per_context)
-                        put!(ch, ([tokens[pos] neg], 0.))
-                        # println("$(tokens[pos])\t$(neg)\t0")
-                    end
+                    # println("Pos")
+                    @time generate_positive(c, ch, tokens, pos)
+                    # println("Neg")
+                    @time generate_negative(c, ch, neg_sampler, tokens, pos)
                 end
             end
             println("Processed $ind lines")

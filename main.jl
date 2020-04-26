@@ -83,10 +83,10 @@ place_sample_on_channel!(channel,
     # println(sample)
     (x, y) = sample
     w_in = String(x[1])
-    w_out = String(x[2])
+    # w_out = String(x[2])
     id_in = m.vocab.vocab[w_in]
-    buckets = get_bucket_ids(m, w_out)
-    id_out = m.vocab.vocab[w_out]
+    buckets = get_bucket_ids(m, w_in)
+    id_out = x[2] #m.vocab.vocab[w_out]
     # println(buckets)
     placed = 0
     put!(channel, (:in, id_in, id_out, y))

@@ -48,7 +48,7 @@ UNK_TOKEN = "UNK"
 
     chnl = Channel() do ch
         seekstart(c.file)
-        for line in eachline(c.file)
+        for (ind, line) in enumerate(eachline(c.file))
             # subsampling procedure 
             # https://arxiv.org/pdf/1310.4546.pdf
             tokens = tokenize(line)
@@ -63,11 +63,12 @@ UNK_TOKEN = "UNK"
                         # println("$(tokens[pos])\t$(tokens[pos+offset])\t1")
                     end
                     for neg in neg_sampler(c.neg_samples_per_context)
-                        put!(ch, ([tokens[pos] neg], 1.))
+                        put!(ch, ([tokens[pos] neg], 0.))
                         # println("$(tokens[pos])\t$(neg)\t0")
                     end
                 end
             end
+            println("Processed $ind lines")
         end
     end
     return chnl

@@ -39,7 +39,9 @@ init_negative_sampling(c::SGCorpus) = begin
     # TODO
     # need only ids, remove work lookup
     # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
-    (size) -> StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size)
+    indices = collect(1:length(probs))
+    probs_ = StatsBase.Weights(probs)
+    (size) -> StatsBase.sample(indices, probs_, size)
 end
 
 UNK_TOKEN = "UNK"
@@ -82,13 +84,13 @@ end
             # tokens = tokenize(line)
             # tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
             # tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
-            # println("Tokens")
+            println("Tokens")
             @time tokens = process_line(c, line)
             if length(tokens) > 1
                 for pos in 1:length(tokens)
-                    # println("Pos")
+                    println("Pos")
                     @time generate_positive(c, ch, tokens, pos)
-                    # println("Neg")
+                    println("Neg")
                     @time generate_negative(c, ch, neg_sampler, tokens, pos)
                 end
             end

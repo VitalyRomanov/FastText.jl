@@ -41,7 +41,7 @@ FastText(vocab::Vocab,
         max_ngram
     )
 
-Base.getindex(m::FastText, word::String) = begin
+Base.getindex(m::FastText, word) = begin
     pieces = in_pieces(word, m.min_ngram, m.max_ngram)
     bucket_idx = hash_piece.(pieces, length(m.vocab))
     bucket_emb = sum(m.bucket[bucket_idx, :], dims=1)[:]
@@ -63,7 +63,7 @@ end
 W_BEGIN = "<"
 W_END = ">"
 
-in_pieces(word::String, min_ngram::Integer, max_ngram::Integer) = begin
+in_pieces(word, min_ngram::Integer, max_ngram::Integer) = begin
     word = W_BEGIN * word * W_END
     pieces = []
     for pos in 1:(length(word)-min_ngram), w in min_ngram:max_ngram

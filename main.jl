@@ -51,9 +51,9 @@ ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 # opt = Descent(0.01)
 
 init_shared_params(ft::FastText) = begin
-    in_shared = SharedArray{Float64}(size(ft.in)...)
-    out_shared = SharedArray{Float64}(size(ft.out)...)
-    bucket_shared = SharedArray{Float64}(size(ft.bucket)...)
+    in_shared = SharedArray{Float32}(size(ft.in)...)
+    out_shared = SharedArray{Float32}(size(ft.out)...)
+    bucket_shared = SharedArray{Float32}(size(ft.bucket)...)
 
     in_shared[:] = ft.in[:]
     out_shared[:] = ft.out[:]
@@ -62,9 +62,9 @@ init_shared_params(ft::FastText) = begin
 end
 
 init_shared_grads(ft::FastText) = begin
-    in_shared = SharedArray{Float64}(size(ft.in)...)
-    out_shared = SharedArray{Float64}(size(ft.out)...)
-    bucket_shared = SharedArray{Float64}(size(ft.bucket)...)
+    in_shared = SharedArray{Float32}(size(ft.in)...)
+    out_shared = SharedArray{Float32}(size(ft.out)...)
+    bucket_shared = SharedArray{Float32}(size(ft.bucket)...)
 
     in_shared[:] .= 0.
     out_shared[:] .= 0.

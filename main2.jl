@@ -231,7 +231,7 @@ end
 
 
 
-process_context(c::SGCorpus, tokens, pos) = begin
+process_context(c::SGCorpus, sample_neg, tokens, pos) = begin
     context = tokens[pos]
     in_id = get_w_id(c, context)
     buckets = get_bucket_ids(c.fasttext, context)
@@ -273,23 +273,24 @@ process_context(c::SGCorpus, tokens, pos) = begin
     # end
 end
 
-process_tokens(c::SGCorpus, tokens) = begin
+process_tokens(c::SGCorpus, sample_neg, tokens) = begin
     for pos in 1:length(tokens)
-        process_context(c, tokens, pos)
+        process_context(c, sample_neg, tokens, pos)
     end
 end
 
 (c::SGCorpus)() = begin
-    # neg_sampler = init_negative_sampling(c)
+    neg_sampler = init_negative_sampling(c.vocab)
+    samples_per_context = c.neg_samples_per_context
+    sample_neg = () -> neg_sampler(samples_per_context)
 
-    # TODO 
-    # this procedure generates 300 w/s. It is impossible to be faster than Gensim at this rate
+    
 
     seekstart(c.file)
     @time for (ind, line) in enumerate(eachline(c.file))
         tokens = drop_tokens(c, tokenize(line))
         if length(tokens) > 1
-            process_tokens(c, tokens)
+            process_tokens(c, sample_neg, tokens)
         end
         println("Processed $ind lines")
     end

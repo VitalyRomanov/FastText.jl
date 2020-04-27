@@ -7,13 +7,15 @@ include("FastText.jl")
 using .FT
 using SharedArrays
 
-FILENAME = "wiki_01"
-# FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
+# FILENAME = "wiki_01"
+FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 # using .Vocabulary
 using .LanguageTools
 using StatsBase
 using Printf
+# using JSON
+
 
 
 # export SGCorpus
@@ -59,14 +61,19 @@ struct ft_params
 end
 
 
+
 init_shared_params(voc_size, n_dims, n_buckets) = begin
     in_shared = SharedArray{Float32}(n_dims, voc_size)
     out_shared = SharedArray{Float32}(n_dims, voc_size)
     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
 
-    in_shared[:] = rand(n_dims, voc_size)[:]
-    out_shared[:] = rand(n_dims, voc_size)[:]
-    bucket_shared[:] = rand(n_dims, n_buckets)[:]
+    in_shared[:] = randn(n_dims, voc_size)[:] .- 0.5
+    out_shared[:] = randn(n_dims, voc_size)[:] .- 0.5
+    bucket_shared[:] = randn(n_dims, n_buckets)[:] .- 0.5
+
+    in_shared .= in_shared .* sum(in_shared .* in_shared, dims=2)
+    out_shared .= out_shared .* sum(out_shared .* out_shared, dims=2)
+    bucket_shared .= bucket_shared .* sum(bucket_shared .* bucket_shared, dims=2)
 
     atomic_in = SharedArray{Bool}(voc_size)
     atomic_out = SharedArray{Bool}(voc_size)
@@ -192,7 +199,16 @@ end
 
 get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
-sigm(x) = (1 ./ (1 + exp.(-x)))
+# sigm(x) = (1 ./ (1 + exp.(-x)))
+sigm(x::Float32)::Float32 = begin
+    if x > 5.
+        0.9933071490757153
+    elseif x < -5.
+        0.0066928509242848554
+    else
+        1 ./ (1 + exp.(-x))
+    end
+end
 
 update_grads!(  in::SharedArray{Float32,2}, 
                 out::SharedArray{Float32,2}, 
@@ -211,22 +227,27 @@ update_grads!(  in::SharedArray{Float32,2},
         @inbounds act += in[i, in_id] .* out[i, out_id]
         i += 1
     end
+    # println(act)
     act = sigm(act .* label)
 
-    if isnan(act)
+    if isnan(act) || isinf(act)
         throw("Activation became infinite")
     end
 
     w::Float32 = - label .* (1 .- act) .* lr
 
+    grad_norm::Float32 = 0.
+
     i = 1
     while i <= n_dims
         @inbounds in_old = in[i, in_id]
         @inbounds out_old = out[i, out_id]
-        @inbounds in[i, in_id] = in_old .+ out_old .* w
-        @inbounds out[i, out_id] = out_old .+ in_old .* w
+        @inbounds in[i, in_id] = in_old .- out_old .* w
+        @inbounds out[i, out_id] = out_old .- in_old .* w
+        grad_norm += out_old .* w .* out_old .* w
         i += 1
     end
+    # println(grad_norm)
 end
 
 
@@ -253,6 +274,7 @@ process_context(sample_neg,
     
     POS_LBL::Float32 = 1.
     NEG_LBL::Float32 = -1.
+    
 
     out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size)]
 
@@ -281,14 +303,48 @@ process_context(sample_neg,
     end
 end
 
-process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
+process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate) = begin
     shared_params = c.shared_params
     win_size = c.params.win_size
-    learning_rate = c.params.learning_rate
+    # learning_rate = c.params.learning_rate
     n_dims = c.params.n_dims
+    lr::Float32 = learning_rate
     for pos in 1:length(tokens)
-        process_context(sample_neg, get_buckets, w2id, shared_params, win_size, learning_rate, n_dims, tokens, pos)
+        process_context(sample_neg, get_buckets, w2id, shared_params, win_size, lr, n_dims, tokens, pos)
     end
+end
+
+
+evaluate(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
+    shared_params = c.shared_params
+    win_size = c.params.win_size
+
+    loss::Float32 = 0.
+
+    for pos in 1:length(tokens)
+        context = tokens[pos]
+        in_id = w2id(context)
+        buckets = get_buckets(context)
+
+        POS_LBL::Float32 = 1.
+        NEG_LBL::Float32 = -1.
+        
+        out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size)]
+        in_vec = shared_params.in[:, in_id] + sum(shared_params.buckets[:, buckets], dims=2)[:]
+
+        for out_id in out_ids
+            out_vec = shared_params.out[:, out_id]
+            loss += -log(sigm(in_vec' * out_vec))
+        end
+
+        neg = sample_neg()
+
+        for n in neg
+            out_vec = shared_params.out[:, n]
+            loss += -log(sigm(-in_vec' * out_vec))
+        end
+    end
+    loss
 end
 
 (c::SGCorpus)(;total_lines=0) = begin
@@ -310,11 +366,33 @@ end
     # include_token = (w) -> rand() < (1 - sqrt(totalWords * subsampling_parameter / counts[w])) # did not seem to be beneficial
 
     seekstart(c.file)
+
+    heldout_line = ""
+    for i in 1:3
+        heldout_line *= " " * strip(readline(c.file))
+    end
+
+    heldout_tokens = drop_tokens(c, tokenize(heldout_line))
+    eval = () -> evaluate(c, sample_neg, get_buckets, w2id, heldout_tokens)
+
+    scheduler = nothing
+    if total_lines > 20000
+        scheduler = (iter) -> begin
+            middle = total_lines ÷ 2
+            frac = abs(iter - middle) / (middle)
+            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * 100
+        end
+    else
+        scheduler = (iter) -> c.params.learning_rate
+    end
+     
+    learning_rate = scheduler(1)
+
     start = time_ns()
     @time for (ind, line) in enumerate(eachline(c.file))
         tokens = drop_tokens(c, tokenize(line))
         if length(tokens) > 1
-            process_tokens(c, sample_neg, get_buckets, w2id, tokens)
+            process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
         end
         if ind % 100 == 0
             lapse = time_ns()
@@ -325,7 +403,8 @@ end
                 time_left = 0.
             end
             # print("\rProcessed $ind/$total_lines lines, ")
-            @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60
+            learning_rate = scheduler(ind)
+            @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval() learning_rate
         end
     end
     println("")
@@ -363,16 +442,16 @@ for (ind, line) in enumerate(eachline(corpus_file))
 end
 println("done")
 
-v = prune(v, 100000)
+v = prune(v, 1000000)
 
 # ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.001)
+c = SGCorpus(corpus_file, v, learning_rate=0.01)
 
 println("Training Parameters:")
 @show c.params
 
 ft = c(total_lines=total_lines)
 
-save(ft, "en_300.jld2")
+save_ft(ft, "en_300")

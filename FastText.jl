@@ -56,7 +56,13 @@ Base.getindex(m::FastText, word::SubString) = Base.getindex(m, String(word))
 get_vid(m::FastText, word) = m.vocab.vocab[word]
 get_bucket_ids(m::FastText, word) = begin
     pieces = in_pieces(word, m.min_ngram, m.max_ngram)
-    bucket_idx = hash_piece.(pieces, size(m.bucket)[1])
+    bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
+    bucket_idx
+end
+
+get_bucket_ids(word, min_ngram, max_ngram, max_bucket) = begin
+    pieces = in_pieces(word, min_ngram, max_ngram)
+    bucket_idx = hash_piece.(pieces, max_bucket)
     bucket_idx
 end
 

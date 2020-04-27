@@ -7,8 +7,8 @@ include("FastText.jl")
 using .FT
 using SharedArrays
 
-# FILENAME = "wiki_01"
-FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
+FILENAME = "wiki_01"
+# FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 # using .Vocabulary
 using .LanguageTools
@@ -213,7 +213,7 @@ update_grads!(  in::SharedArray{Float32,2},
     end
     act = sigm(act .* label)
 
-    if isinf(act)
+    if isnan(act)
         throw("Activation became infinite")
     end
 
@@ -329,6 +329,23 @@ end
         end
     end
     println("")
+
+    in_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
+    out_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
+    bucket_m = zeros(Float32, c.params.n_dims, c.params.n_buckets)
+
+    in_m[:] = c.shared_params.in[:]
+    out_m[:] = c.shared_params.out[:]
+    bucket_m[:] = c.shared_params.buckets[:]
+
+    FastText(
+        in_m,
+        out_m,
+        bucket_m,
+        c.vocab,
+        c.params.min_ngram,
+        c.params.max_ngram,
+    )
 end
 # end
 
@@ -351,9 +368,11 @@ v = prune(v, 100000)
 # ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.5)
+c = SGCorpus(corpus_file, v, learning_rate=0.001)
 
 println("Training Parameters:")
 @show c.params
 
-c(total_lines=total_lines)
+ft = c(total_lines=total_lines)
+
+save(ft, "en_300.jld2")

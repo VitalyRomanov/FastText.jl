@@ -3,11 +3,14 @@
 
 
 module FT
+# using JLD
+using JLD2, FileIO
 
 include("Vocab.jl")
 using .Vocabulary
 
 export learnVocab!, Vocab, prune,
+        save, load, load_ft,
         FastText, get_bucket_ids
 
 struct FastText
@@ -85,5 +88,40 @@ end
 hash_piece(x, voc_size)::Int64 = hash(x) % voc_size + 1
 
 # Flux.@functor FastText
+
+save(m::FastText, path) = JLD2.save(path, Dict(
+    "in"=>m.in, 
+    "out"=>m.out, 
+    "bucket"=>m.bucket, 
+    "vocab"=>m.vocab, 
+    "min_ngram"=>m.min_ngram, 
+    "max_ngram"=>m.max_ngram
+))
+    # JLD.save(path, "in_m", m.in, 
+    #             "out_m", m.out, 
+    #             "bucket_m", m.bucket, 
+    #             "vocab", m.vocab, 
+    #             "min_ngram", m.min_ngram, 
+    #             "max_ngram", m.max_ngram)
+
+load_ft(path) = begin
+    params = JLD2.load(path)
+    FastText(
+        params["in"],
+        params["out"],
+        params["bucket"],
+        params["vocab"],
+        params["min_ngram"],
+        params["max_ngram"]
+    )
+end
+# FastText(
+#     JLD.load(path, "in_m"),
+#     JLD.load(path, "out_m"),
+#     JLD.load(path, "bucket_m"),
+#     JLD.load(path, "vocab"),
+#     JLD.load(path, "min_ngram"),
+#     JLD.load(path, "max_ngram"),
+# )
 
 end

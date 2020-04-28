@@ -30,6 +30,7 @@ struct SGParams
     neg_samples_per_context::Int32
     subsampling_parameter::Float32
     learning_rate::Float32
+    batch_size::Int32
 end
 
 Base.show(io::IO, params::SGParams) = begin
@@ -49,6 +50,7 @@ struct SGCorpus
     vocab
     params
     shared_params
+    shared_grads
 end
 
 struct ft_params
@@ -71,9 +73,36 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     out_shared[:] = randn(n_dims, voc_size)[:]
     bucket_shared[:] = randn(n_dims, n_buckets)[:]
 
-    in_shared .= in_shared .* sum(in_shared .* in_shared, dims=2)
-    out_shared .= out_shared .* sum(out_shared .* out_shared, dims=2)
-    bucket_shared .= bucket_shared .* sum(bucket_shared .* bucket_shared, dims=2)
+    # in_shared .= in_shared .* sum(in_shared .* in_shared, dims=2)
+    # out_shared .= out_shared .* sum(out_shared .* out_shared, dims=2)
+    # bucket_shared .= bucket_shared .* sum(bucket_shared .* bucket_shared, dims=2)
+
+    atomic_in = SharedArray{Bool}(voc_size)
+    atomic_out = SharedArray{Bool}(voc_size)
+    atomic_buckets = SharedArray{Bool}(n_buckets)
+
+    atomic_in .= false
+    atomic_out .= false
+    atomic_buckets .= false
+
+    ft_params(
+        in_shared, 
+        out_shared, 
+        bucket_shared, 
+        atomic_in,
+        atomic_out, 
+        atomic_buckets
+    )
+end
+
+init_shared_grads(voc_size, n_dims, n_buckets) = begin
+    in_shared = SharedArray{Float32}(n_dims, voc_size)
+    out_shared = SharedArray{Float32}(n_dims, voc_size)
+    bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
+
+    in_shared[:] .= 0.
+    out_shared[:] .= 0.
+    bucket_shared[:] .= 0.
 
     atomic_in = SharedArray{Bool}(voc_size)
     atomic_out = SharedArray{Bool}(voc_size)
@@ -107,7 +136,8 @@ SGCorpus(file,
         win_size=5, 
         learning_rate=0.01,
         neg_samples_per_context=15, 
-        subsampling_parameter=1e-4) = 
+        subsampling_parameter=1e-4,
+        batch_size=256) = 
             SGCorpus(file, vocab, SGParams(
                 n_dims,
                 n_buckets,
@@ -117,10 +147,12 @@ SGCorpus(file,
                 max_ngram,
                 neg_samples_per_context,
                 subsampling_parameter,
-                learning_rate
-            ), init_shared_params(
-                length(vocab), n_dims, n_buckets
-            ))
+                learning_rate,
+                batch_size
+            ), init_shared_params(length(vocab), n_dims, n_buckets),
+            init_shared_grads(length(vocab), n_dims, n_buckets),
+            )
+
 
 init_negative_sampling(v) = begin
     ordered_words = sort(collect(v.vocab), by=x->x[2])
@@ -131,8 +163,6 @@ init_negative_sampling(v) = begin
         reverseMap[id] = w
     end
     probs .^= 3/4
-    # TODO
-    # need only ids, remove work lookup
     # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
     indices = collect(1:length(probs))
     probs_ = StatsBase.Weights(probs)
@@ -199,19 +229,19 @@ end
 
 get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
-# sigm(x) = (1 ./ (1 + exp.(-x)))
-sigm(x::Float32)::Float32 = begin
-    if x > 7.
-        0.9933071490757153
-    elseif x < -7.
-        0.0066928509242848554
-    else
-        1 ./ (1 + exp.(-x))
-    end
-end
+sigm(x) = (1 ./ (1 + exp.(-x)))
+# sigm(x::Float32)::Float32 = begin
+#     if x > 7.
+#         0.9933071490757153
+#     elseif x < -7.
+#         0.0066928509242848554
+#     else
+#         1 ./ (1 + exp.(-x))
+#     end
+# end
 
-update_grads!(  in_grad,
-                in_grad_id,
+update_grads!(  in_grad::SharedArray{Float32,2},
+                out_grad::SharedArray{Float32,2},
                 in::SharedArray{Float32,2}, 
                 out::SharedArray{Float32,2}, 
                 in_id::Int64, 
@@ -249,9 +279,10 @@ update_grads!(  in_grad,
     while i <= n_dims
         in_old = in[i, in_id]
         out_old = out[i, out_id]
-        in_grad[i, in_grad_id] += - out_old .* w
-        # @inbounds in[i, in_id] = in_old .- out_old .* w
-        out[i, out_id] = out_old .- in_old .* w
+        in_grad[i, in_id] += - out_old .* w
+        out_grad[i, out_id] += - in_old .* w
+        # in[i, in_id] = in_old .- out_old .* w
+        # out[i, out_id] = out_old .- in_old .* w
         # grad_norm += out_old .* w .* out_old .* w
         i += 1
     end
@@ -264,6 +295,7 @@ process_context(sample_neg,
                 get_buckets, 
                 w2id, 
                 shared_params, 
+                shared_grads,
                 win_size::Int32, 
                 learning_rate::Float32, 
                 n_dims::Int32, 
@@ -273,9 +305,6 @@ process_context(sample_neg,
     context = tokens[pos]
     in_id = w2id(context)
     buckets = get_buckets(context)
-
-    in_grad = zeros(n_dims, 1)
-    buckets_grad = zeros(n_dims, length(buckets))
 
     # TODO 
     # make parallel
@@ -298,10 +327,10 @@ process_context(sample_neg,
 
     
     for out_id in out_ids
-        update_grads!(in_grad, 1, shared_params.in, shared_params.out, in_id, out_id, POS_LBL, learning_rate, n_dims)
+        update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, out_id, POS_LBL, learning_rate, n_dims)
 
-        for (bucket_ind, bucket) in enumerate(buckets)
-            update_grads!(buckets_grad, bucket_ind, shared_params.buckets, shared_params.out, bucket, out_id, POS_LBL, learning_rate, n_dims)
+        for bucket in buckets
+            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, bucket, out_id, POS_LBL, learning_rate, n_dims)
         end
 
     end
@@ -310,29 +339,25 @@ process_context(sample_neg,
 
     for n in neg
         neg_out_id = n
-        update_grads!(in_grad, 1, shared_params.in, shared_params.out, in_id, neg_out_id, NEG_LBL, learning_rate, n_dims)
+        update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, neg_out_id, NEG_LBL, learning_rate, n_dims)
 
         for (bucket_ind, bucket) in enumerate(buckets)
-            update_grads!(buckets_grad, bucket_ind, shared_params.buckets, shared_params.out, bucket, neg_out_id, NEG_LBL, learning_rate, n_dims)
+            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, bucket, neg_out_id, NEG_LBL, learning_rate, n_dims)
         end
-    end
-
-    shared_params.in[:, in_id] -= in_grad
-
-    for (bucket_ind, bucket) in enumerate(buckets)
-        shared_params.buckets[:, bucket] -= buckets_grad[:, bucket_ind]
     end
 end
 
-process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate) = begin
+process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate, total_processed) = begin
     shared_params = c.shared_params
+    shared_grads = c.shared_grads
     win_size = c.params.win_size
     # learning_rate = c.params.learning_rate
     n_dims = c.params.n_dims
     lr::Float32 = learning_rate
     for pos in 1:length(tokens)
-        process_context(sample_neg, get_buckets, w2id, shared_params, win_size, lr, n_dims, tokens, pos)
+        process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
     end
+    total_processed + length(tokens)
 end
 
 
@@ -417,12 +442,25 @@ end
     scheduler = (iter) -> c.params.learning_rate
     learning_rate = scheduler(1)
 
+    total_processed = 0
+
     start = time_ns()
     @time for (ind, line) in enumerate(eachline(c.file))
         tokens = drop_tokens(c, tokenize(line))
         if length(tokens) > 1
-            process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
+            total_processed = process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate, total_processed)
         end
+
+        if total_processed > c.params.batch_size
+            c.shared_grads.in .-= c.shared_grads.in
+            c.shared_grads.out .-= c.shared_grads.out
+            c.shared_grads.buckets .-= c.shared_grads.buckets
+
+            c.shared_grads.in[:] .= 0.
+            c.shared_grads.out[:] .= 0.
+            c.shared_grads.buckets[:] .= 0.
+        end
+
         if ind % 100 == 0
             lapse = time_ns()
             passed_seconds = (lapse - start) * 1e-9

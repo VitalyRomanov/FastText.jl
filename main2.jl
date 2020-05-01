@@ -121,6 +121,9 @@ update_grads!(  in_grad::SharedArray{Float32,2},
     end
     # println(act)
 
+    # the goal of this is not actually to tell that the gradient is unstable
+    # this simplifies computation because grad for large values like this is 
+    # almost 0, so we skip computing almost zero values
     if abs(act) > 10.
         return 
     end

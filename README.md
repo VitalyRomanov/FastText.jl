@@ -18,3 +18,6 @@ Lessons
 - their gradient formula seems to be a little bit different (label - f) * alpha where f is sigmoid and labels are 0 and 1
 - do not update central word params immediately!!! gradients will oscillate
 - gradients clipped only for negative samles, not for positive 
+
+
+NEED TO TEST VECTORS!!

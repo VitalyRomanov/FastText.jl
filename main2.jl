@@ -3,12 +3,14 @@
 # include("Vocab.jl")
 include("LanguageTools.jl")
 include("FastText.jl")
+include("SG.jl")
 
 using .FT
 using SharedArrays
 
 # FILENAME = "wiki_01"
-FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
+FILENAME = "/Users/LTV/Desktop/AA_J.txt"
+# FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 # using .Vocabulary
 using .LanguageTools
@@ -20,154 +22,12 @@ using Printf
 
 # export SGCorpus
 
-struct SGParams
-    n_dims::Int32
-    n_buckets::Int32
-    voc_size::Int32
-    win_size::Int32
-    min_ngram::Int32
-    max_ngram::Int32
-    neg_samples_per_context::Int32
-    subsampling_parameter::Float32
-    learning_rate::Float32
-    batch_size::Int32
-end
 
-Base.show(io::IO, params::SGParams) = begin
-    println(io, "\n\tn_dims = $(params.n_dims)")
-    println(io, "\tvoc_size = $(params.voc_size)")
-    println(io, "\tn_buckets = $(params.n_buckets)")
-    println(io, "\twin_size = $(params.win_size)")
-    println(io, "\tmin_ngram = $(params.min_ngram)")
-    println(io, "\tmax_ngram = $(params.max_ngram)")
-    println(io, "\tneg_samples_per_context = $(params.neg_samples_per_context)")
-    println(io, "\tsubsampling_parameter = $(params.subsampling_parameter)")
-    println(io, "\tlearning_rate = $(params.learning_rate)")
-end
-
-struct SGCorpus
-    file
-    vocab
-    params
-    shared_params
-    shared_grads
-end
-
-struct ft_params
-    in
-    out
-    buckets
-    atomic_in
-    atomic_out
-    atomic_buckets
-end
-
-
-
-init_shared_params(voc_size, n_dims, n_buckets) = begin
-    in_shared = SharedArray{Float32}(n_dims, voc_size)
-    out_shared = SharedArray{Float32}(n_dims, voc_size)
-    bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
-
-    in_shared[:] = randn(n_dims, voc_size)[:]
-    out_shared[:] = randn(n_dims, voc_size)[:]
-    bucket_shared[:] = randn(n_dims, n_buckets)[:]
-
-    # in_shared .= in_shared .* sum(in_shared .* in_shared, dims=2)
-    # out_shared .= out_shared .* sum(out_shared .* out_shared, dims=2)
-    # bucket_shared .= bucket_shared .* sum(bucket_shared .* bucket_shared, dims=2)
-
-    atomic_in = SharedArray{Bool}(voc_size)
-    atomic_out = SharedArray{Bool}(voc_size)
-    atomic_buckets = SharedArray{Bool}(n_buckets)
-
-    atomic_in .= false
-    atomic_out .= false
-    atomic_buckets .= false
-
-    ft_params(
-        in_shared, 
-        out_shared, 
-        bucket_shared, 
-        atomic_in,
-        atomic_out, 
-        atomic_buckets
-    )
-end
-
-init_shared_grads(voc_size, n_dims, n_buckets) = begin
-    in_shared = SharedArray{Float32}(n_dims, voc_size)
-    out_shared = SharedArray{Float32}(n_dims, voc_size)
-    bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
-
-    in_shared[:] .= 0.
-    out_shared[:] .= 0.
-    bucket_shared[:] .= 0.
-
-    atomic_in = SharedArray{Bool}(voc_size)
-    atomic_out = SharedArray{Bool}(voc_size)
-    atomic_buckets = SharedArray{Bool}(n_buckets)
-
-    atomic_in .= false
-    atomic_out .= false
-    atomic_buckets .= false
-
-    ft_params(
-        in_shared, 
-        out_shared, 
-        bucket_shared, 
-        atomic_in,
-        atomic_out, 
-        atomic_buckets
-    )
-end
 
 # TODO
 # implement PMI based word Ngram extraction
 # https://papers.nips.cc/paper/5021-distributed-representations-of-words-and-phrases-and-their-compositionality.pdf
 
-
-SGCorpus(file, 
-        vocab;
-        n_dims=300,
-        n_buckets=20000,
-        min_ngram=3,
-        max_ngram=5,
-        win_size=5, 
-        learning_rate=0.01,
-        neg_samples_per_context=15, 
-        subsampling_parameter=1e-4,
-        batch_size=256) = 
-            SGCorpus(file, vocab, SGParams(
-                n_dims,
-                n_buckets,
-                length(vocab),
-                win_size,
-                min_ngram,
-                max_ngram,
-                neg_samples_per_context,
-                subsampling_parameter,
-                learning_rate,
-                batch_size
-            ), init_shared_params(length(vocab), n_dims, n_buckets),
-            init_shared_grads(length(vocab), n_dims, n_buckets),
-            )
-
-
-init_negative_sampling(v) = begin
-    ordered_words = sort(collect(v.vocab), by=x->x[2])
-    probs = zeros(length(ordered_words))
-    reverseMap = Dict()
-    for (w, id) in ordered_words
-        probs[id] = v.counts[w] / v.totalWords
-        reverseMap[id] = w
-    end
-    probs .^= 3/4
-    # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
-    indices = collect(1:length(probs))
-    probs_ = StatsBase.Weights(probs)
-    (size) -> StatsBase.sample(indices, probs_, size)
-end
 
 # get_negative(c::SGCorpus, size) = begin
 #     if c.neg_buffer_pos + size > length(c.neg_buffer)
@@ -180,29 +40,29 @@ end
 # end
 
 
-process_line(c::SGCorpus, line) = begin
-    tokens = tokenize(line)
-    tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
-    tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
-    tokens
-end
+# process_line(c::SGCorpus, line) = begin
+#     tokens = tokenize(line)
+#     tokens = map(w -> if w in keys(c.vocab.vocab); w; else; UNK_TOKEN; end, tokens)
+#     tokens = filter(w -> rand() < (1 - sqrt(c.vocab.totalWords * c.subsampling_parameter / c.vocab.counts[w])), tokens)
+#     tokens
+# end
 
-generate_positive(c::SGCorpus, ch, tokens, pos) = begin
-    win_size = c.params.win_size
-    for offset in -win_size:win_size
-        if offset == 0; continue; end
-        if ((pos + offset) < 1 || (pos + offset) > length(tokens)); continue; end
-        put!(ch, ((tokens[pos], tokens[pos+offset]), 1.))
-        # println("$(tokens[pos])\t$(tokens[pos+offset])\t1")
-    end
-end
+# generate_positive(c::SGCorpus, ch, tokens, pos) = begin
+#     win_size = c.params.win_size
+#     for offset in -win_size:win_size
+#         if offset == 0; continue; end
+#         if ((pos + offset) < 1 || (pos + offset) > length(tokens)); continue; end
+#         put!(ch, ((tokens[pos], tokens[pos+offset]), 1.))
+#         # println("$(tokens[pos])\t$(tokens[pos+offset])\t1")
+#     end
+# end
 
-generate_negative(c::SGCorpus, ch, neg_sampler, tokens, pos) = begin
-    for neg in neg_sampler(c.params.neg_samples_per_context)
-        put!(ch, ((tokens[pos], neg), 0.))
-        # println("$(tokens[pos])\t$(neg)\t0")
-    end
-end
+# generate_negative(c::SGCorpus, ch, neg_sampler, tokens, pos) = begin
+#     for neg in neg_sampler(c.params.neg_samples_per_context)
+#         put!(ch, ((tokens[pos], neg), 0.))
+#         # println("$(tokens[pos])\t$(neg)\t0")
+#     end
+# end
 
 in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
 
@@ -267,9 +127,9 @@ update_grads!(  in_grad::SharedArray{Float32,2},
 
     act = sigm(act .* label)
 
-    if isnan(act) || isinf(act)
-        throw("Activation became infinite")
-    end
+    # if isnan(act) || isinf(act)
+    #     throw("Activation became infinite")
+    # end
 
     w::Float32 = - label .* (1 .- act) .* lr
 
@@ -279,8 +139,8 @@ update_grads!(  in_grad::SharedArray{Float32,2},
     while i <= n_dims
         in_old = in[i, in_id]
         out_old = out[i, out_id]
-        in_grad[i, in_id] += - out_old .* w
-        out_grad[i, out_id] += - in_old .* w
+        in_grad[i, in_id] += out_old .* w
+        out_grad[i, out_id] += in_old .* w
         # in[i, in_id] = in_old .- out_old .* w
         # out[i, out_id] = out_old .- in_old .* w
         # grad_norm += out_old .* w .* out_old .* w
@@ -318,9 +178,11 @@ process_context(sample_neg,
     # TODO
     # update in and bucket gradients only after processign the entire window
     # otherwise gradients seem to oscillate
-    
 
-    out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size)]
+    # check how much this slows us down
+    win_size = abs(rand(Int)) % win_size + 1
+
+    out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size) if offset != pos]
 
     # TODO
     # scale learning rate with the number of buckets
@@ -338,6 +200,7 @@ process_context(sample_neg,
     neg = sample_neg()
 
     for n in neg
+        # if n == out_id; continue; end
         neg_out_id = n
         update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, neg_out_id, NEG_LBL, learning_rate, n_dims)
 
@@ -345,9 +208,11 @@ process_context(sample_neg,
             update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, bucket, neg_out_id, NEG_LBL, learning_rate, n_dims)
         end
     end
+
+    
 end
 
-process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate, total_processed) = begin
+process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate) = begin
     shared_params = c.shared_params
     shared_grads = c.shared_grads
     win_size = c.params.win_size
@@ -357,7 +222,7 @@ process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate
     for pos in 1:length(tokens)
         process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
     end
-    total_processed + length(tokens)
+    length(tokens)
 end
 
 
@@ -401,45 +266,92 @@ evaluate(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
     loss
 end
 
-(c::SGCorpus)(;total_lines=0) = begin
+get_neg_sampler(c) = begin
     neg_sampler = init_negative_sampling(c.vocab)
     samples_per_context = c.params.neg_samples_per_context
     sample_neg = () -> neg_sampler(samples_per_context)
+    sample_neg
+end
 
+get_bucket_fnct(c) = begin
     min_ngram = c.params.min_ngram
     max_ngram = c.params.max_ngram
     max_bucket = c.params.n_buckets
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, max_bucket)
+    get_buckets
+end
 
+get_vocab_fnct(c) = begin
     v = c.vocab.vocab
     w2id = (w) -> get(v, w, -1) # -1 of oov # did not seem to be beneficial
+    w2id
+end
 
-    # totalWords = c.vocab.totalWords
-    # subsampling_parameter = c.subsampling_parameter
-    # counts = c.vocab.counts
-    # include_token = (w) -> rand() < (1 - sqrt(totalWords * subsampling_parameter / counts[w])) # did not seem to be beneficial
-
-    seekstart(c.file)
-
-    heldout_line = ""
-    for i in 1:3
-        heldout_line *= " " * strip(readline(c.file))
-    end
-
-    # heldout_tokens = drop_tokens(c, tokenize(heldout_line))
-    eval = (tokens) -> evaluate(c, sample_neg, get_buckets, w2id, tokens)
-
+get_scheduler(c) = begin
     scheduler = nothing
     if total_lines > 20000
         scheduler = (iter) -> begin
             middle = total_lines ÷ 2
             frac = abs(iter - middle) / (middle)
-            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * 100
+            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * 10
         end
     else
         scheduler = (iter) -> c.params.learning_rate
     end
-    scheduler = (iter) -> c.params.learning_rate
+    # scheduler = (iter) -> c.params.learning_rate
+    scheduler
+end
+
+
+apply_grads(c) = begin
+    c.shared_params.in .-= c.shared_grads.in
+    c.shared_params.out .-= c.shared_grads.out
+    c.shared_params.buckets .-= c.shared_grads.buckets
+
+    c.shared_grads.in .= 0.
+    c.shared_grads.out .= 0.
+    c.shared_grads.buckets .= 0.
+end
+
+
+check_weights(c) = begin
+    act = sum(c.shared_params.in)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+    act = sum(c.shared_params.out)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+    act = sum(c.shared_params.buckets)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+end
+
+
+compute_lapse(start, ind) = begin
+    lapse = time_ns()
+    passed_seconds = (lapse - start) * 1e-9
+    if total_lines > 0
+        time_left = passed_seconds * (total_lines / ind - 1.)
+    else
+        time_left = 0.
+    end
+    passed_seconds, time_left
+end
+
+
+(c::SGCorpus)(;total_lines=0) = begin
+    
+    sample_neg = get_neg_sampler(c)
+    get_buckets = get_bucket_fnct(c)
+    w2id = get_vocab_fnct(c)
+    scheduler = get_scheduler(c)
+    eval = (tokens) -> evaluate(c, sample_neg, get_buckets, w2id, tokens)
+    
+    seekstart(c.file)
+
     learning_rate = scheduler(1)
 
     total_processed = 0
@@ -448,27 +360,21 @@ end
     @time for (ind, line) in enumerate(eachline(c.file))
         tokens = drop_tokens(c, tokenize(line))
         if length(tokens) > 1
-            total_processed = process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate, total_processed)
+            total_processed += process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
         end
 
         if total_processed > c.params.batch_size
-            c.shared_grads.in .-= c.shared_grads.in
-            c.shared_grads.out .-= c.shared_grads.out
-            c.shared_grads.buckets .-= c.shared_grads.buckets
+            apply_grads(c)
+            # println("Updated")
+            total_processed = 0
+        end
 
-            c.shared_grads.in[:] .= 0.
-            c.shared_grads.out[:] .= 0.
-            c.shared_grads.buckets[:] .= 0.
+        if ind % 2000 == 0
+            check_weights(c)
         end
 
         if ind % 100 == 0
-            lapse = time_ns()
-            passed_seconds = (lapse - start) * 1e-9
-            if total_lines > 0
-                time_left = passed_seconds * (total_lines / ind - 1.)
-            else
-                time_left = 0.
-            end
+            passed_seconds, time_left = compute_lapse(start, ind)
             # print("\rProcessed $ind/$total_lines lines, ")
             learning_rate = scheduler(ind)
             @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval(tokens)/length(tokens) learning_rate
@@ -509,12 +415,12 @@ for (ind, line) in enumerate(eachline(corpus_file))
 end
 println("done")
 
-v = prune(v, 5000)
+v = prune(v, 20000)
 
 # ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.5)
+c = SGCorpus(corpus_file, v, learning_rate=0.01)
 
 println("Training Parameters:")
 @show c.params

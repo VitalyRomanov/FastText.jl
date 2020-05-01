@@ -6,6 +6,7 @@ module FT
 # using JLD
 using JLD2
 using HDF5
+import Printf
 
 include("Vocab.jl")
 using .Vocabulary
@@ -65,6 +66,9 @@ get_bucket_ids(m::FastText, word) = begin
 end
 
 get_bucket_ids(word, min_ngram, max_ngram, max_bucket) = begin
+    if max_bucket == 0
+        return []
+    end
     pieces = in_pieces(word, min_ngram, max_ngram)
     bucket_idx = hash_piece.(pieces, max_bucket)
     bucket_idx
@@ -86,7 +90,7 @@ in_pieces(word, min_ngram::Integer, max_ngram::Integer) = begin
     pieces
 end
 
-hash_piece(x, voc_size)::Int64 = hash(x) % voc_size + 1
+hash_piece(x, max_bucket)::Int64 = hash(x) % max_bucket + 1
 
 # Flux.@functor FastText
 
@@ -133,5 +137,22 @@ end
 #     JLD.load(path, "min_ngram"),
 #     JLD.load(path, "max_ngram"),
 # )
+
+export_w2v(m::FastText, path) = begin
+    sink = open(path, "w")
+    write(sink, "$(size(m.in)[2]) $(size(m.in)[1])\n")
+
+    n_dims = size(m.in)[1]
+    for word in keys(m.vocab)
+        word_ind = m.vocab[word]
+        write(sink, "$word")
+        for i = 1:n_dims
+            s = Printf.@sprintf " %.4f" m.in[i, word_ind];
+            write(sink, "$s")
+        end
+        write(sink, "\n")
+    end
+    close(sink)
+end
 
 end

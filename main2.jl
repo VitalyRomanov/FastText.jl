@@ -18,6 +18,29 @@ using StatsBase
 using Printf
 # using JSON
 
+# using Distributed
+# addprocs(2)
+# julia -p <n> -L file1.jl -L file2.jl driver.jl
+# r = @spawnat :any rand(2,2)
+# s = @spawnat :any 1 .+ fetch(r)
+# the act of shipping the closure ()->sum(A) to worker 2 results in Main.A being defined on 2. Main.A continues to exist on worker 2 even after the call remotecall_fetch returns
+# S = SharedArray{Int,2}()
+# @sync begin
+#     for p in procs(S)
+#         @async begin
+#             remotecall_wait(fill!, p, S, p)
+#         end
+#     end
+# end
+
+# function advection_shared!(q, u)
+#     @sync begin
+#         for p in procs(q)
+#             @async remotecall_wait(advection_shared_chunk!, :any, q, u)
+#         end
+#     end
+#     q
+# end;
 
 
 # export SGCorpus
@@ -91,9 +114,9 @@ get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
 sigm(x) = (1 ./ (1 + exp.(-x)))
 # sigm(x::Float32)::Float32 = begin
-#     if x > 7.
+#     if x > 5.
 #         0.9933071490757153
-#     elseif x < -7.
+#     elseif x < -5.
 #         0.0066928509242848554
 #     else
 #         1 ./ (1 + exp.(-x))
@@ -121,12 +144,13 @@ update_grads!(  in_grad::SharedArray{Float32,2},
     end
     # println(act)
 
+
     # the goal of this is not actually to tell that the gradient is unstable
     # this simplifies computation because grad for large values like this is 
     # almost 0, so we skip computing almost zero values
-    if abs(act) > 10.
-        return 
-    end
+    # if abs(act) > 5.
+    #     return 
+    # end
 
     act = sigm(act .* label)
 
@@ -246,13 +270,14 @@ evaluate(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
         out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size)]
         in_vec = shared_params.in[:, in_id] + sum(shared_params.buckets[:, buckets], dims=2)[:]
 
+
         for out_id in out_ids
             out_vec = shared_params.out[:, out_id]
             act = in_vec' * out_vec
-            if abs(act) > 10.
-                continue
-            end
-            loss += -log(sigm(act))
+            # if abs(act) > 5.
+            #     continue
+            # end
+            loss += -log(sigm(act) + 1e-23) / length(out_ids)
         end
 
         neg = sample_neg()
@@ -260,10 +285,10 @@ evaluate(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
         for n in neg
             out_vec = shared_params.out[:, n]
             act = - in_vec' * out_vec
-            if abs(act) > 10.
-                continue
-            end
-            loss += -log(sigm(act))
+            # if abs(act) > 5.
+            #     continue
+            # end
+            loss += -log(sigm(act) + 1e-23) / length(neg)
         end
     end
     loss
@@ -301,7 +326,7 @@ get_scheduler(c) = begin
     else
         scheduler = (iter) -> c.params.learning_rate
     end
-    # scheduler = (iter) -> c.params.learning_rate
+    scheduler = (iter) -> c.params.learning_rate
     scheduler
 end
 
@@ -330,6 +355,10 @@ check_weights(c) = begin
     if isnan(act) || isinf(act)
         throw("Weights spoiled")
     end
+
+    # c.shared_params.in .= c.shared_params.in ./ sqrt.(sum(c.shared_params.in .^ 2, dims=1))
+    # c.shared_params.out .= c.shared_params.out ./ sqrt.(sum(c.shared_params.out .^ 2, dims=1))
+    # c.shared_params.buckets .= c.shared_params.buckets ./ sqrt.(sum(c.shared_params.buckets .^ 2, dims=1))
 end
 
 
@@ -380,7 +409,9 @@ end
             passed_seconds, time_left = compute_lapse(start, ind)
             # print("\rProcessed $ind/$total_lines lines, ")
             learning_rate = scheduler(ind)
-            @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval(tokens)/length(tokens) learning_rate
+            if length(tokens) > 1
+                @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval(tokens)/length(tokens) learning_rate
+            end
         end
     end
     println("")
@@ -423,7 +454,7 @@ v = prune(v, 20000)
 # ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.01)
+c = SGCorpus(corpus_file, v, learning_rate=0.1)
 
 println("Training Parameters:")
 @show c.params

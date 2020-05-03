@@ -6,6 +6,7 @@ module FT
 # using JLD
 using JLD2
 using HDF5
+using LinearAlgebra
 import Printf
 
 include("Vocab.jl")
@@ -48,7 +49,7 @@ FastText(vocab::Vocab,
 
 Base.getindex(m::FastText, word) = begin
     pieces = in_pieces(word, m.min_ngram, m.max_ngram)
-    bucket_idx = hash_piece.(pieces, length(m.vocab))
+    bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
     bucket_emb = sum(m.bucket[:, bucket_idx], dims=2)[:]
     word_ind = m.vocab.vocab[word]
     word_emb = m.in[:, word_ind]
@@ -143,16 +144,40 @@ export_w2v(m::FastText, path) = begin
     write(sink, "$(size(m.in)[2]) $(size(m.in)[1])\n")
 
     n_dims = size(m.in)[1]
-    for word in keys(m.vocab)
-        word_ind = m.vocab[word]
+    for word in keys(m.vocab.vocab)
+        word_ind = m.vocab.vocab[word]
+        emb = m.in[:, word_ind]
+        normalize!(emb)
         write(sink, "$word")
         for i = 1:n_dims
-            s = Printf.@sprintf " %.4f" m.in[i, word_ind];
+            s = Printf.@sprintf " %.4f" emb[i];
             write(sink, "$s")
         end
         write(sink, "\n")
     end
     close(sink)
+end
+
+export_for_tb(m::FastText, path) = begin
+    sink = open(path * "vectors.tsv", "w")
+    meta = open(path * "meta.tsv", "w")
+    # write(sink, "$(size(m.in)[2]) $(size(m.in)[1])\n")
+    n_dims = size(m.in)[1]
+    sorted_words = sort(collect(m.vocab.counts), by=x->x[2], rev=true)
+    for (ind, (word, count)) in enumerate(sorted_words)
+        word_ind = m.vocab.vocab[word]
+        emb = m.in[:, word_ind]
+        normalize!(emb)
+        s = ""
+        write(meta, "$word\n")
+        for i = 1:n_dims
+            s *= Printf.@sprintf "%.6f\t" emb[i];
+        end
+        write(sink, strip(s))
+        write(sink, "\n")
+    end
+    close(sink)
+    close(meta)
 end
 
 end

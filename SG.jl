@@ -51,9 +51,9 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     out_shared[:] = randn(n_dims, voc_size)[:]
     bucket_shared[:] = randn(n_dims, n_buckets)[:]
 
-    # in_shared .= in_shared .* sum(in_shared .* in_shared, dims=2)
-    # out_shared .= out_shared .* sum(out_shared .* out_shared, dims=2)
-    # bucket_shared .= bucket_shared .* sum(bucket_shared .* bucket_shared, dims=2)
+    in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
+    out_shared .= out_shared ./ sqrt.(sum(out_shared .* out_shared, dims=1))
+    bucket_shared .= bucket_shared ./ sqrt.(sum(bucket_shared .* bucket_shared, dims=1))
 
     atomic_in = SharedArray{Bool}(voc_size)
     atomic_out = SharedArray{Bool}(voc_size)
@@ -103,7 +103,7 @@ end
 SGCorpus(file, 
         vocab;
         n_dims=300,
-        n_buckets=0,
+        n_buckets=10000,
         min_ngram=3,
         max_ngram=5,
         win_size=5, 

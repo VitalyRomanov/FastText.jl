@@ -9,7 +9,9 @@ using .FT
 using SharedArrays
 
 # FILENAME = "wiki_01"
-FILENAME = "/Users/LTV/Desktop/AA_J.txt"
+EPOCHS = 1
+# FILENAME = "test.txt"
+FILENAME = "/Users/LTV/Desktop/AA_t.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 # using .Vocabulary
@@ -89,7 +91,7 @@ using Printf
 
 in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
 
-include_token(c::SGCorpus, w) = rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+include_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
 
 drop_tokens(c, tokens) = begin
     # subsampling procedure 
@@ -102,7 +104,7 @@ drop_tokens(c, tokens) = begin
         # if !(in_voc(c, tokens[i]))
         #     tokens[i] = UNK_TOKEN
         # end
-        if in_voc(c, tokens[i]) && include_token(c, tokens[i])
+        if in_voc(c, tokens[i]) #&& include_token(c, tokens[i])
             buffer[buffer_pos] = tokens[i]
             buffer_pos += 1
         end
@@ -112,16 +114,16 @@ end
 
 get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
-sigm(x) = (1 ./ (1 + exp.(-x)))
-# sigm(x::Float32)::Float32 = begin
-#     if x > 5.
-#         0.9933071490757153
-#     elseif x < -5.
-#         0.0066928509242848554
-#     else
-#         1 ./ (1 + exp.(-x))
-#     end
-# end
+# sigm(x) = (1 ./ (1 + exp.(-x)))
+sigm(x::Float32)::Float32 = begin
+    if x > 10.
+        0.9999546021312976
+    elseif x < -10.
+        4.5397868702434395e-5
+    else
+        1 ./ (1 + exp.(-x))
+    end
+end
 
 update_grads!(  in_grad::SharedArray{Float32,2},
                 out_grad::SharedArray{Float32,2},
@@ -151,14 +153,21 @@ update_grads!(  in_grad::SharedArray{Float32,2},
     # if abs(act) > 5.
     #     return 
     # end
+    if abs(act) > 10.
+        c = 10. / act
+    else
+        c = 1.
+    end
 
     act = sigm(act .* label)
+
+    
 
     # if isnan(act) || isinf(act)
     #     throw("Activation became infinite")
     # end
 
-    w::Float32 = - label .* (1 .- act) .* lr
+    w::Float32 = -label .* (1 .- act) .* lr
 
     grad_norm::Float32 = 0.
 
@@ -166,8 +175,8 @@ update_grads!(  in_grad::SharedArray{Float32,2},
     while i <= n_dims
         in_old = in[i, in_id]
         out_old = out[i, out_id]
-        in_grad[i, in_id] += out_old .* w
-        out_grad[i, out_id] += in_old .* w
+        in_grad[i, in_id] -= out_old .* w .* c
+        out_grad[i, out_id] -= in_old .* w .* c
         # in[i, in_id] = in_old .- out_old .* w
         # out[i, out_id] = out_old .- in_old .* w
         # grad_norm += out_old .* w .* out_old .* w
@@ -192,6 +201,9 @@ process_context(sample_neg,
     context = tokens[pos]
     in_id = w2id(context)
     buckets = get_buckets(context)
+    bucket_ind = 1
+    n_buckets = length(buckets)
+    bucket_lr = @. learning_rate / n_buckets
 
     # TODO 
     # make parallel
@@ -202,41 +214,48 @@ process_context(sample_neg,
     POS_LBL::Float32 = 1.
     NEG_LBL::Float32 = -1.
 
-    # TODO
-    # update in and bucket gradients only after processign the entire window
-    # otherwise gradients seem to oscillate
-
     # check how much this slows us down
-    win_size = abs(rand(Int)) % win_size + 1
+    # win_size = abs(rand(Int)) % win_size + 1
 
-    out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size) if offset != pos]
+    win_pos = max(1, pos-win_size)
+    win_pos_end = min(length(tokens), pos+win_size)
+    out_id = -1
 
-    # TODO
-    # scale learning rate with the number of buckets
-
-    
-    for out_id in out_ids
+    while win_pos <= win_pos_end
+        if win_pos == pos; win_pos += 1; continue; end
+        
+        out_id = w2id(tokens[win_pos])
+        
         update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, out_id, POS_LBL, learning_rate, n_dims)
 
-        for bucket in buckets
-            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, bucket, out_id, POS_LBL, learning_rate, n_dims)
+        while bucket_ind <= n_buckets
+            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, buckets[bucket_ind], out_id, POS_LBL, bucket_lr, n_dims)
+            bucket_ind += 1
         end
-
+        win_pos += 1
     end
 
+    # TODO
+    # make negative sampling faster
     neg = sample_neg()
+    n_neg = length(neg)
+    neg_lr = learning_rate # / n_neg
+    bucket_neg_lr = bucket_lr # / n_neg
+    neg_ind = 1
+    neg_out_id = -1
+    bucket_ind = 1
 
-    for n in neg
-        # if n == out_id; continue; end
-        neg_out_id = n
-        update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, neg_out_id, NEG_LBL, learning_rate, n_dims)
+    while neg_ind <= n_neg
+        neg_out_id = neg[neg_ind]
+        update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, neg_out_id, NEG_LBL, neg_lr, n_dims)
 
-        for (bucket_ind, bucket) in enumerate(buckets)
-            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, bucket, neg_out_id, NEG_LBL, learning_rate, n_dims)
+        while bucket_ind <= n_buckets
+            update_grads!(shared_grads.buckets, shared_grads.out, shared_params.buckets, shared_params.out, buckets[bucket_ind], neg_out_id, NEG_LBL, bucket_neg_lr, n_dims)
+            bucket_ind += 1
         end
+        neg_ind += 1
     end
 
-    
 end
 
 process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate) = begin
@@ -245,9 +264,11 @@ process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate
     win_size = c.params.win_size
     # learning_rate = c.params.learning_rate
     n_dims = c.params.n_dims
-    lr::Float32 = learning_rate
+    lr::Float32 = learning_rate / c.params.batch_size
     for pos in 1:length(tokens)
-        process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+        if include_token(c, tokens[pos])
+            process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+        end
     end
     length(tokens)
 end
@@ -332,9 +353,9 @@ end
 
 
 apply_grads(c) = begin
-    c.shared_params.in .-= c.shared_grads.in
-    c.shared_params.out .-= c.shared_grads.out
-    c.shared_params.buckets .-= c.shared_grads.buckets
+    c.shared_params.in .+= c.shared_grads.in
+    c.shared_params.out .+= c.shared_grads.out
+    c.shared_params.buckets .+= c.shared_grads.buckets
 
     c.shared_grads.in .= 0.
     c.shared_grads.out .= 0.
@@ -381,40 +402,44 @@ end
     w2id = get_vocab_fnct(c)
     scheduler = get_scheduler(c)
     eval = (tokens) -> evaluate(c, sample_neg, get_buckets, w2id, tokens)
+
+    for epoch in 1:EPOCHS
     
-    seekstart(c.file)
+        seekstart(c.file)
 
-    learning_rate = scheduler(1)
+        learning_rate = scheduler(1)
 
-    total_processed = 0
+        total_processed = 0
 
-    start = time_ns()
-    @time for (ind, line) in enumerate(eachline(c.file))
-        tokens = drop_tokens(c, tokenize(line))
-        if length(tokens) > 1
-            total_processed += process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
-        end
-
-        if total_processed > c.params.batch_size
-            apply_grads(c)
-            # println("Updated")
-            total_processed = 0
-        end
-
-        if ind % 2000 == 0
-            check_weights(c)
-        end
-
-        if ind % 100 == 0
-            passed_seconds, time_left = compute_lapse(start, ind)
-            # print("\rProcessed $ind/$total_lines lines, ")
-            learning_rate = scheduler(ind)
+        start = time_ns()
+        @time for (ind, line) in enumerate(eachline(c.file))
+            tokens = drop_tokens(c, tokenize(line))
             if length(tokens) > 1
-                @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval(tokens)/length(tokens) learning_rate
+                total_processed += process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
+            end
+
+            if total_processed > c.params.batch_size
+                apply_grads(c)
+                # check_weights(c)
+                # println("Updated")
+                total_processed = 0
+            end
+
+            # if ind % 500 == 0
+                
+            # end
+
+            if ind % 100 == 0
+                passed_seconds, time_left = compute_lapse(start, ind)
+                # print("\rProcessed $ind/$total_lines lines, ")
+                learning_rate = scheduler(ind)
+                if length(tokens) > 1
+                    @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 eval(tokens)/length(tokens) learning_rate
+                end
             end
         end
+        println("")
     end
-    println("")
 
     in_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
     out_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
@@ -449,12 +474,12 @@ for (ind, line) in enumerate(eachline(corpus_file))
 end
 println("done")
 
-v = prune(v, 20000)
+v = prune(v, 5000)
 
 # ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.1)
+c = SGCorpus(corpus_file, v, learning_rate=0.5, n_buckets=10000)
 
 println("Training Parameters:")
 @show c.params
@@ -462,3 +487,4 @@ println("Training Parameters:")
 ft = c(total_lines=total_lines)
 
 save_ft(ft, "en_300")
+FT.export_for_tb(ft, "en_300")

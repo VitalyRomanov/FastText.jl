@@ -39,22 +39,25 @@ FastText(vocab::Vocab,
         min_ngram::Int64=3, 
         max_ngram::Int64=5) = 
     FastText(
-        rand(dim_s, length(vocab)), 
-        rand(dim_s, length(vocab)), 
-        rand(dim_s, bucket_size),
+        begin; in=randn(dim_s, length(vocab)); in./=sqrt.(sum(in.^2, dims=1)); in; end,
+        begin; out=randn(dim_s, length(vocab)); out./=sqrt.(sum(out.^2, dims=1)); out; end,
+        begin; buckets=randn(dim_s, bucket_size); buckets./=sqrt.(sum(buckets.^2, dims=1)); buckets; end,
+        # rand(dim_s, length(vocab)), 
+        # rand(dim_s, bucket_size),
         vocab,
         min_ngram,
-        max_ngram
+        max_ngram,
     )
 
 Base.getindex(m::FastText, word) = begin
-    pieces = in_pieces(word, m.min_ngram, m.max_ngram)
-    bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
+    bucket_idx = get_bucket_ids(word, m.min_ngram, m.max_ngram, size(m.bucket)[2])
+    # pieces = in_pieces(word, m.min_ngram, m.max_ngram)
+    # bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
     bucket_emb = sum(m.bucket[:, bucket_idx], dims=2)[:]
     word_ind = m.vocab.vocab[word]
     word_emb = m.in[:, word_ind]
 
-    (bucket_emb + word_emb[:]) / (length(pieces) + 1)
+    (bucket_emb + word_emb[:]) / (length(bucket_idx) + 1)
 end
 
 Base.getindex(m::FastText, word::SubString) = Base.getindex(m, String(word))

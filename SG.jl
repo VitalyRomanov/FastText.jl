@@ -47,13 +47,13 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     out_shared = SharedArray{Float32}(n_dims, voc_size)
     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
 
-    in_shared[:] = randn(n_dims, voc_size)[:]
-    out_shared[:] = randn(n_dims, voc_size)[:]
-    bucket_shared[:] = randn(n_dims, n_buckets)[:]
+    in_shared .= randn(n_dims, voc_size) / n_dims
+    out_shared .= randn(n_dims, voc_size) / n_dims
+    bucket_shared .= randn(n_dims, n_buckets) / n_dims
 
-    in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
-    out_shared .= out_shared ./ sqrt.(sum(out_shared .* out_shared, dims=1))
-    bucket_shared .= bucket_shared ./ sqrt.(sum(bucket_shared .* bucket_shared, dims=1))
+    # in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
+    # out_shared .= out_shared ./ sqrt.(sum(out_shared .* out_shared, dims=1))
+    # bucket_shared .= bucket_shared ./ sqrt.(sum(bucket_shared .* bucket_shared, dims=1))
 
     atomic_in = SharedArray{Bool}(voc_size)
     atomic_out = SharedArray{Bool}(voc_size)
@@ -108,9 +108,9 @@ SGCorpus(file,
         max_ngram=5,
         win_size=5, 
         learning_rate=0.01,
-        neg_samples_per_context=15, 
+        neg_samples_per_context=500, 
         subsampling_parameter=1e-4,
-        batch_size=256) = 
+        batch_size=1) = 
             SGCorpus(file, vocab, SGParams(
                 n_dims,
                 n_buckets,

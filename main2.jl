@@ -91,10 +91,10 @@ using Printf
 
 in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
 
-include_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+discard_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
 
 drop_tokens(c, tokens) = begin
-    # subsampling procedure 
+    # subsampling procedure
     # https://arxiv.org/pdf/1310.4546.pdf
     buffer = Array{SubString}(undef, length(tokens))
     buffer_pos = 1
@@ -104,7 +104,7 @@ drop_tokens(c, tokens) = begin
         # if !(in_voc(c, tokens[i]))
         #     tokens[i] = UNK_TOKEN
         # end
-        if in_voc(c, tokens[i]) #&& include_token(c, tokens[i])
+        if in_voc(c, tokens[i]) #&& discard_token(c, tokens[i])
             buffer[buffer_pos] = tokens[i]
             buffer_pos += 1
         end
@@ -127,15 +127,15 @@ end
 
 update_grads!(  in_grad::SharedArray{Float32,2},
                 out_grad::SharedArray{Float32,2},
-                in::SharedArray{Float32,2}, 
-                out::SharedArray{Float32,2}, 
-                in_id::Int64, 
-                out_id::Int64, 
-                label::Float32, 
+                in::SharedArray{Float32,2},
+                out::SharedArray{Float32,2},
+                in_id::Int64,
+                out_id::Int64,
+                label::Float32,
                 lr::Float32,
                 n_dims::Int32) = begin
 
-    # TODO 
+    # TODO
     # test correctness of this function
 
     act::Float32 = 0.
@@ -148,10 +148,10 @@ update_grads!(  in_grad::SharedArray{Float32,2},
 
 
     # the goal of this is not actually to tell that the gradient is unstable
-    # this simplifies computation because grad for large values like this is 
+    # this simplifies computation because grad for large values like this is
     # almost 0, so we skip computing almost zero values
     # if abs(act) > 5.
-    #     return 
+    #     return
     # end
     if abs(act) > 10.
         c = 10. / act
@@ -161,7 +161,7 @@ update_grads!(  in_grad::SharedArray{Float32,2},
 
     act = sigm(act .* label)
 
-    
+
 
     # if isnan(act) || isinf(act)
     #     throw("Activation became infinite")
@@ -187,15 +187,15 @@ end
 
 
 
-process_context(sample_neg, 
-                get_buckets, 
-                w2id, 
-                shared_params, 
+process_context(sample_neg,
+                get_buckets,
+                w2id,
+                shared_params,
                 shared_grads,
-                win_size::Int32, 
-                learning_rate::Float32, 
-                n_dims::Int32, 
-                tokens, 
+                win_size::Int32,
+                learning_rate::Float32,
+                n_dims::Int32,
+                tokens,
                 pos::Int64
             ) = begin
     context = tokens[pos]
@@ -205,12 +205,12 @@ process_context(sample_neg,
     n_buckets = length(buckets)
     bucket_lr = @. learning_rate / n_buckets
 
-    # TODO 
+    # TODO
     # make parallel
     # maybe need to make parallel at a level of process_context
-    # to reduce collisions. but nteed to move a lot of stuff into 
+    # to reduce collisions. but nteed to move a lot of stuff into
     # workers. neet to restructure all structures...
-    
+
     POS_LBL::Float32 = 1.
     NEG_LBL::Float32 = -1.
 
@@ -223,9 +223,9 @@ process_context(sample_neg,
 
     while win_pos <= win_pos_end
         if win_pos == pos; win_pos += 1; continue; end
-        
+
         out_id = w2id(tokens[win_pos])
-        
+
         update_grads!(shared_grads.in, shared_grads.out, shared_params.in, shared_params.out, in_id, out_id, POS_LBL, learning_rate, n_dims)
 
         while bucket_ind <= n_buckets
@@ -258,17 +258,10 @@ process_context(sample_neg,
 
 end
 
-process_tokens(c::SGCorpus, sample_neg, get_buckets, w2id, tokens, learning_rate) = begin
-    shared_params = c.shared_params
-    shared_grads = c.shared_grads
-    win_size = c.params.win_size
-    # learning_rate = c.params.learning_rate
-    n_dims = c.params.n_dims
+process_tokens(c_proc, tokens, learning_rate) = begin
     lr::Float32 = learning_rate / c.params.batch_size
     for pos in 1:length(tokens)
-        if include_token(c, tokens[pos])
-            process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
-        end
+        process_context(tokens, pos, lr)
     end
     length(tokens)
 end
@@ -287,7 +280,7 @@ evaluate(c::SGCorpus, sample_neg, get_buckets, w2id, tokens) = begin
 
         POS_LBL::Float32 = 1.
         NEG_LBL::Float32 = -1.
-        
+
         out_ids = [w2id(tokens[offset]) for offset in max(1, pos-win_size):min(length(tokens), pos+win_size)]
         in_vec = shared_params.in[:, in_id] + sum(shared_params.buckets[:, buckets], dims=2)[:]
 
@@ -396,15 +389,16 @@ end
 
 
 (c::SGCorpus)(;total_lines=0) = begin
-    
+
     sample_neg = get_neg_sampler(c)
     get_buckets = get_bucket_fnct(c)
     w2id = get_vocab_fnct(c)
     scheduler = get_scheduler(c)
     eval = (tokens) -> evaluate(c, sample_neg, get_buckets, w2id, tokens)
+    c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
 
     for epoch in 1:EPOCHS
-    
+
         seekstart(c.file)
 
         learning_rate = scheduler(1)
@@ -415,7 +409,7 @@ end
         @time for (ind, line) in enumerate(eachline(c.file))
             tokens = drop_tokens(c, tokenize(line))
             if length(tokens) > 1
-                total_processed += process_tokens(c, sample_neg, get_buckets, w2id, tokens, learning_rate)
+                total_processed += process_tokens(c_proc, tokens, learning_rate)
             end
 
             if total_processed > c.params.batch_size
@@ -426,7 +420,7 @@ end
             end
 
             # if ind % 500 == 0
-                
+
             # end
 
             if ind % 100 == 0

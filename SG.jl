@@ -64,11 +64,11 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     atomic_buckets .= false
 
     ft_params(
-        in_shared, 
-        out_shared, 
-        bucket_shared, 
+        in_shared,
+        out_shared,
+        bucket_shared,
         atomic_in,
-        atomic_out, 
+        atomic_out,
         atomic_buckets
     )
 end
@@ -91,26 +91,26 @@ init_shared_grads(voc_size, n_dims, n_buckets) = begin
     atomic_buckets .= false
 
     ft_params(
-        in_shared, 
-        out_shared, 
-        bucket_shared, 
+        in_shared,
+        out_shared,
+        bucket_shared,
         atomic_in,
-        atomic_out, 
+        atomic_out,
         atomic_buckets
     )
 end
 
-SGCorpus(file, 
+SGCorpus(file,
         vocab;
         n_dims=300,
         n_buckets=10000,
         min_ngram=3,
         max_ngram=5,
-        win_size=5, 
+        win_size=5,
         learning_rate=0.01,
-        neg_samples_per_context=500, 
+        neg_samples_per_context=500,
         subsampling_parameter=1e-4,
-        batch_size=1) = 
+        batch_size=1) =
             SGCorpus(file, vocab, SGParams(
                 n_dims,
                 n_buckets,
@@ -138,5 +138,72 @@ init_negative_sampling(v) = begin
     # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
     indices = collect(1:length(probs))
     probs_ = StatsBase.Weights(probs)
-    (size) -> StatsBase.sample(indices, probs_, size)
+    # (size) -> StatsBase.sample(indices, probs_, size)
+    (size) -> StatsBase.sample(indices, size)
+end
+
+in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
+
+discard_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+
+drop_tokens(c, tokens) = begin
+    # subsampling procedure
+    # https://arxiv.org/pdf/1310.4546.pdf
+    buffer = Array{Int32}(undef, length(tokens))
+    buffer_pos = 1
+
+    UNK_TOKEN = "UNK"
+    for i in 1:length(tokens)
+        if in_voc(c, tokens[i]) && discard_token(c, tokens[i])
+            buffer[buffer_pos] = get_w_id(c, tokens[i])
+            buffer_pos += 1
+        end
+    end
+    return buffer[1:buffer_pos-1]
+end
+
+get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
+
+get_neg_sampler(c) = begin
+    neg_sampler = init_negative_sampling(c.vocab)
+    samples_per_context = c.params.neg_samples_per_context
+    sample_neg = () -> neg_sampler(samples_per_context)
+    sample_neg
+end
+
+get_bucket_fnct(c) = begin
+    min_ngram = c.params.min_ngram
+    max_ngram = c.params.max_ngram
+    max_bucket = c.params.n_buckets
+    get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, max_bucket)
+    get_buckets
+end
+
+get_vocab_fnct(c) = begin
+    v = c.vocab.vocab
+    w2id = (w) -> get(v, w, -1) # -1 of oov # did not seem to be beneficial
+    w2id
+end
+
+get_scheduler(c) = begin
+    scheduler = nothing
+    if total_lines > 20000
+        scheduler = (iter) -> begin
+            middle = total_lines ÷ 2
+            frac = abs(iter - middle) / (middle)
+            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * 10
+        end
+    else
+        scheduler = (iter) -> c.params.learning_rate
+    end
+    scheduler = (iter) -> c.params.learning_rate
+    scheduler
+end
+
+get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
+    shared_params = c.shared_params
+    shared_grads = c.shared_grads
+    win_size = c.params.win_size
+    n_dims = c.params.n_dims
+    (tokens, pos, lr) -> process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
 end

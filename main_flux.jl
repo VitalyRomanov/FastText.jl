@@ -1,8 +1,8 @@
-cd("/Users/LTV/dev/FastText.jl/")
+# cd("/Users/LTV/dev/FastText.jl/")
 using Revise
-include("FastText.jl")
-include("LanguageTools.jl")
-include("SkipgramCorpus.jl")
+includet("FastText.jl")
+includet("LanguageTools.jl")
+includet("SkipgramCorpus.jl")
 using .LanguageTools
 using .FT
 using .SkipGramCorpus
@@ -28,27 +28,26 @@ c = SGCorpus(corpus_file, v)
 
 ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
-
 loss(x,y) = begin
     (id_in, buckets, id_out) = x
     # id_in = x[1]
     # id_out = x[end]
     # buckets = x[2:end-1]
-    emb_in = ft.in[:, id_in]
-    emb_buckets = ft.bucket[:, buckets]
-    emb_out = ft.out[:, id_out]
+    emb_in = @view ft.in[:, id_in]
+    emb_buckets = @view ft.bucket[:, buckets]
+    emb_out = @view ft.out[:, id_out]
 
-    e_in = emb_in + sum(emb_buckets, dims=2)[:]
+    e_in = @. emb_in + sum(emb_buckets, dims=2)[:]
 
     Flux.logitbinarycrossentropy(e_in' * emb_out, y)
 end
 opt = Descent(0.01)
 
 
-place_sample_on_channel!(channel, 
-                        # shared_in, 
-                        # shared_out, 
-                        # shared_bucket, 
+place_sample_on_channel!(channel,
+                        # shared_in,
+                        # shared_out,
+                        # shared_bucket,
                         m::FastText,
                         sample) = begin
     # println(sample)
@@ -73,7 +72,7 @@ place_sample_on_channel!(channel,
 end
 
 format_sample(m::FastText, sample)::Tuple{Tuple{Int64, Array{Int64}, Int64}, Float64} = begin
-    # 
+    #
     # ::Tuple{Array{Int64}, Float64}
     (x, y) = sample
     w_in = String(x[1])
@@ -106,7 +105,7 @@ train(ft::FastText, c::SGCorpus) = begin
             samples = []
             println("Processed: ", processed," current loss: ", c_loss)
         end
-    end    
+    end
 end
 
 train(ft, c)
@@ -137,10 +136,3 @@ train(ft, c)
 # for _ in 1:100
 #     Flux.train!(loss, params(ft), data, opt)
 # end
-
-
-
-
-
-
-

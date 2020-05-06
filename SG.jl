@@ -139,7 +139,8 @@ init_negative_sampling(v) = begin
     indices = collect(1:length(probs))
     probs_ = StatsBase.Weights(probs)
     # (size) -> StatsBase.sample(indices, probs_, size)
-    (size) -> map(id -> reverseMap[id], StatsBase.sample(indices, size))
+    # (size) -> map(id -> reverseMap[id], StatsBase.sample(indices, size))
+    () -> StatsBase.sample(indices)
 end
 
 in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
@@ -166,9 +167,10 @@ get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
 get_neg_sampler(c) = begin
     neg_sampler = init_negative_sampling(c.vocab)
-    samples_per_context = c.params.neg_samples_per_context
-    sample_neg = () -> neg_sampler(samples_per_context)
-    sample_neg
+    # samples_per_context = c.params.neg_samples_per_context
+    # sample_neg = () -> neg_sampler(samples_per_context)
+    # sample_neg
+    neg_sampler
 end
 
 get_bucket_fnct(c) = begin
@@ -205,7 +207,8 @@ get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
     shared_grads = c.shared_grads
     win_size = c.params.win_size
     n_dims = c.params.n_dims
-    (tokens, pos, lr) -> process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+    buffer = zeros(Float32, n_dims)
+    (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
 end
 
 compute_lapse(start, ind) = begin

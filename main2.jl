@@ -151,7 +151,36 @@ ft_act(in, b, out, in_id, b_id, out_id, n_dims)::Float32 = begin
     sigm(a)
 end
 
-process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads,
+
+activation(buffer, out, out_id, n_dims) = begin
+    a::Float32 = 0.
+    i = 1
+    while i <= n_dims
+        a += buffer[i] .* out[i, out_id]
+        i += 1
+    end
+    sigm(a)
+end
+
+
+compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
+    n_bs = length(b_ids)
+    factor = 1. ./ (1. + n_bs)
+    i = 1
+    while i <= n_dims
+        buffer[i] = in_[i, in_id]
+        b_i = 1
+        while b_i <= n_bs
+            buffer[i] += b_[i, b_ids[b_i]]
+            b_i += 1
+        end
+        buffer[i] *= factor
+        i += 1
+    end
+end
+
+
+process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads,
                 win_size, lr, n_dims, tokens, pos) = begin
     # current context
     context = tokens[pos]
@@ -172,6 +201,8 @@ process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads,
     in_ = shared_params.in; out_ = shared_params.out; b_ = shared_params.buckets
     in_g = shared_grads.in; out_g = shared_grads.out; b_g = shared_grads.buckets
 
+    compute_in!(buffer, in_, b_, in_id, buckets, n_dims)
+
     # init
     loss = 0.
     act = 0.
@@ -186,7 +217,8 @@ process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads,
         # println("$context\t$out_target\t$POS_LBL")
         out_id = w2id(out_target)
 
-        act = ft_act(in_, b_, out_, in_id, buckets, out_id, n_dims)
+        # act = ft_act(in_, b_, out_, in_id, buckets, out_id, n_dims)
+        act = activation(buffer, out_, out_id, n_dims)
         loss += -log(act)
         processed += 1
 
@@ -203,17 +235,18 @@ process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads,
 
     # TODO
     # make negative sampling faster
-    neg = sample_neg()
-    n_neg = length(neg)
+    # neg = sample_neg()
+    n_neg = 15#length(neg)
     neg_ind = 1
     bucket_ind = 1
 
     while neg_ind <= n_neg
-        neg_out = neg[neg_ind]
+        # neg_out = sample_neg() #neg[neg_ind]
         # println("$context\t$neg_out\t$NEG_LBL")
-        neg_out_id = w2id(neg_out)
+        neg_out_id = sample_neg() #w2id(neg_out)
 
-        act = ft_act(in_, b_, out_, in_id, buckets, neg_out_id, n_dims)
+        # act = ft_act(in_, b_, out_, in_id, buckets, neg_out_id, n_dims)
+        act = activation(buffer, out_, neg_out_id, n_dims)
         loss += -log(1-act)
         processed += 1
 

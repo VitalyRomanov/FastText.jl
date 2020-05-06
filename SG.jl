@@ -108,7 +108,7 @@ SGCorpus(file,
         max_ngram=5,
         win_size=5,
         learning_rate=0.01,
-        neg_samples_per_context=500,
+        neg_samples_per_context=15,
         subsampling_parameter=1e-4,
         batch_size=1) =
             SGCorpus(file, vocab, SGParams(
@@ -139,7 +139,7 @@ init_negative_sampling(v) = begin
     indices = collect(1:length(probs))
     probs_ = StatsBase.Weights(probs)
     # (size) -> StatsBase.sample(indices, probs_, size)
-    (size) -> StatsBase.sample(indices, size)
+    (size) -> map(id -> reverseMap[id], StatsBase.sample(indices, size))
 end
 
 in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
@@ -206,4 +206,46 @@ get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
     win_size = c.params.win_size
     n_dims = c.params.n_dims
     (tokens, pos, lr) -> process_context(sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+end
+
+compute_lapse(start, ind) = begin
+    lapse = time_ns()
+    passed_seconds = (lapse - start) * 1e-9
+    if total_lines > 0
+        time_left = passed_seconds * (total_lines / ind - 1.)
+    else
+        time_left = 0.
+    end
+    passed_seconds, time_left
+end
+
+
+apply_grads(c) = begin
+    c.shared_params.in .+= c.shared_grads.in
+    c.shared_params.out .+= c.shared_grads.out
+    c.shared_params.buckets .+= c.shared_grads.buckets
+
+    c.shared_grads.in .= 0.
+    c.shared_grads.out .= 0.
+    c.shared_grads.buckets .= 0.
+end
+
+
+check_weights(c) = begin
+    act = sum(c.shared_params.in)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+    act = sum(c.shared_params.out)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+    act = sum(c.shared_params.buckets)
+    if isnan(act) || isinf(act)
+        throw("Weights spoiled")
+    end
+
+    # c.shared_params.in .= c.shared_params.in ./ sqrt.(sum(c.shared_params.in .^ 2, dims=1))
+    # c.shared_params.out .= c.shared_params.out ./ sqrt.(sum(c.shared_params.out .^ 2, dims=1))
+    # c.shared_params.buckets .= c.shared_params.buckets ./ sqrt.(sum(c.shared_params.buckets .^ 2, dims=1))
 end

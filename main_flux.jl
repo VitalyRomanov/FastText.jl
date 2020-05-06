@@ -1,8 +1,8 @@
 # cd("/Users/LTV/dev/FastText.jl/")
-using Revise
-includet("FastText.jl")
-includet("LanguageTools.jl")
-includet("SkipgramCorpus.jl")
+# using Revise
+include("FastText.jl")
+include("LanguageTools.jl")
+include("SkipgramCorpus.jl")
 using .LanguageTools
 using .FT
 using .SkipGramCorpus
@@ -12,6 +12,7 @@ Flux.@functor FastText
 
 # FILENAME = "wiki_01"
 FILENAME = "/Users/LTV/Desktop/AA_t.txt"
+FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
 corpus_file = open(FILENAME)
 
 v = Vocab()
@@ -26,18 +27,18 @@ println("done")
 
 c = SGCorpus(corpus_file, v)
 
-ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
+const ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
 
 loss(x,y) = begin
     (id_in, buckets, id_out) = x
     # id_in = x[1]
     # id_out = x[end]
     # buckets = x[2:end-1]
-    emb_in = @view ft.in[:, id_in]
-    emb_buckets = @view ft.bucket[:, buckets]
-    emb_out = @view ft.out[:, id_out]
+    emb_in = ft.in[:, id_in]
+    emb_buckets = ft.bucket[:, buckets]
+    emb_out = ft.out[:, id_out]
 
-    e_in = @. emb_in + sum(emb_buckets, dims=2)[:]
+    e_in = emb_in + sum(emb_buckets, dims=2)[:]
 
     Flux.logitbinarycrossentropy(e_in' * emb_out, y)
 end

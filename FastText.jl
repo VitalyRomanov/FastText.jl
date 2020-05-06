@@ -25,24 +25,24 @@ struct FastText
     max_ngram
 end
 
-# FastText(voc_s::Integer, dim_s::Integer, vocab::Vocab; bucket_size::Integer=2000) = 
+# FastText(voc_s::Integer, dim_s::Integer, vocab::Vocab; bucket_size::Integer=2000) =
 #     FastText(
-#         rand(voc_s, dim_s), 
-#         rand(voc_s, dim_s), 
+#         rand(voc_s, dim_s),
+#         rand(voc_s, dim_s),
 #         rand(bucket_size, dim_s),
 #         vocab
 #     )
 
-FastText(vocab::Vocab, 
+FastText(vocab::Vocab,
         dim_s::Int64;
-        bucket_size::Int64=20000, 
-        min_ngram::Int64=3, 
-        max_ngram::Int64=5) = 
+        bucket_size::Int64=20000,
+        min_ngram::Int64=3,
+        max_ngram::Int64=5) =
     FastText(
         begin; in=randn(dim_s, length(vocab)); in./=sqrt.(sum(in.^2, dims=1)); in; end,
         begin; out=randn(dim_s, length(vocab)); out./=sqrt.(sum(out.^2, dims=1)); out; end,
         begin; buckets=randn(dim_s, bucket_size); buckets./=sqrt.(sum(buckets.^2, dims=1)); buckets; end,
-        # rand(dim_s, length(vocab)), 
+        # rand(dim_s, length(vocab)),
         # rand(dim_s, bucket_size),
         vocab,
         min_ngram,
@@ -57,7 +57,7 @@ Base.getindex(m::FastText, word) = begin
     word_ind = m.vocab.vocab[word]
     word_emb = m.in[:, word_ind]
 
-    (bucket_emb + word_emb[:]) / (length(bucket_idx) + 1)
+    (bucket_emb + word_emb[:]) ./ (length(bucket_idx) + 1)
 end
 
 Base.getindex(m::FastText, word::SubString) = Base.getindex(m, String(word))
@@ -112,11 +112,11 @@ save_ft(m::FastText, path) = begin
         file["Vocab/totalWords"] = m.vocab.totalWords
     end
 end
-    # JLD.save(path, "in_m", m.in, 
-    #             "out_m", m.out, 
-    #             "bucket_m", m.bucket, 
-    #             "vocab", m.vocab, 
-    #             "min_ngram", m.min_ngram, 
+    # JLD.save(path, "in_m", m.in,
+    #             "out_m", m.out,
+    #             "bucket_m", m.bucket,
+    #             "vocab", m.vocab,
+    #             "min_ngram", m.min_ngram,
     #             "max_ngram", m.max_ngram)
 
 load_ft(path) = begin

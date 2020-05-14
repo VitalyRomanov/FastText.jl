@@ -40,6 +40,16 @@ struct ft_params
     atomic_buckets
 end
 
+struct sg_tools
+    compute_in!
+    activation
+    update_grad_in!
+    update_grad_b!
+    w2id
+    get_buckets
+    sample_neg
+end
+
 
 
 init_shared_params(voc_size, n_dims, n_buckets) = begin
@@ -143,25 +153,25 @@ init_negative_sampling(v) = begin
     () -> StatsBase.sample(indices)
 end
 
-in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
+# in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
 
-discard_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+# discard_token(c::SGCorpus, w) = rand() > (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
 
-drop_tokens(c, tokens) = begin
-    # subsampling procedure
-    # https://arxiv.org/pdf/1310.4546.pdf
-    buffer = Array{Int32}(undef, length(tokens))
-    buffer_pos = 1
-
-    UNK_TOKEN = "UNK"
-    for i in 1:length(tokens)
-        if in_voc(c, tokens[i]) && discard_token(c, tokens[i])
-            buffer[buffer_pos] = get_w_id(c, tokens[i])
-            buffer_pos += 1
-        end
-    end
-    return buffer[1:buffer_pos-1]
-end
+# drop_tokens(c, tokens) = begin
+#     # subsampling procedure
+#     # https://arxiv.org/pdf/1310.4546.pdf
+#     buffer = Array{Int32}(undef, length(tokens))
+#     buffer_pos = 1
+#
+#     UNK_TOKEN = "UNK"
+#     for i in 1:length(tokens)
+#         if in_voc(c, tokens[i]) && discard_token(c, tokens[i])
+#             buffer[buffer_pos] = get_w_id(c, tokens[i])
+#             buffer_pos += 1
+#         end
+#     end
+#     return buffer[1:buffer_pos-1]
+# end
 
 get_w_id(c::SGCorpus, w) = c.vocab.vocab[w]
 
@@ -209,6 +219,54 @@ get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
     n_dims = c.params.n_dims
     buffer = zeros(Float32, n_dims)
     (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+end
+
+get_context_processor2(c::SGCorpus, f) = begin
+    shared_params = c.shared_params
+    shared_grads = c.shared_grads
+    win_size = c.params.win_size
+    n_dims = c.params.n_dims
+    buffer = zeros(Float32, n_dims)
+    (tokens, pos, lr) -> _process_context(buffer, f, win_size, lr, tokens, pos)
+end
+
+get_in_representation_computer(c::SGCorpus) = begin
+    n_dims = c.params.n_dims
+    in_ = c.shared_params.in
+    b_ = c.shared_params.buckets
+    (buffer, in_id, bucket_ids) -> _compute_in!(buffer, in_, b_, in_id, bucket_ids, n_dims)
+end
+
+get_activation_computer(c::SGCorpus) = begin
+    n_dims = c.params.n_dims
+    out_ = c.shared_params.out
+    (buffer, out_id) -> _activation(buffer, out_, out_id, n_dims)
+end
+
+get_in_grad_updater(c::SGCorpus) = begin
+    in_grad = c.shared_grads.in
+    out_grad = c.shared_grads.out
+    in_ = c.shared_params.in
+    out_ = c.shared_params.out
+    n_dims = c.params.n_dims
+    (in_id, out_id, label, lr, lr_factor, act) ->
+    _update_grads!(in_grad, out_grad,
+                    in_, out_,
+                    in_id, out_id, label, lr, lr_factor,
+                    n_dims, act)
+end
+
+get_bucket_grad_updater(c::SGCorpus) = begin
+    b_grad = c.shared_grads.buckets
+    out_grad = c.shared_grads.out
+    b_ = c.shared_params.buckets
+    out_ = c.shared_params.out
+    n_dims = c.params.n_dims
+    (b_id, out_id, label, lr, lr_factor, act) ->
+    _update_grads!(b_grad, out_grad,
+                    b_, out_,
+                    b_id, out_id, label, lr, lr_factor,
+                    n_dims, act)
 end
 
 compute_lapse(start, ind) = begin

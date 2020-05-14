@@ -9,11 +9,11 @@ includet("SG.jl")
 using .FT
 using SharedArrays
 
-# FILENAME = "wiki_01"
+FILENAME = "wiki_00"
 EPOCHS = 1
 # FILENAME = "test.txt"
-FILENAME = "/Users/LTV/Desktop/AA_t.txt"
-FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
+# FILENAME = "/Users/LTV/Desktop/AA_t.txt"
+# FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 # using .Vocabulary
@@ -116,7 +116,7 @@ end
 
 sigm(x) = (1 ./ (1 + exp.(-x)))
 
-update_grads!(in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
+_update_grads!(in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
                 in::SharedArray{Float32,2}, out::SharedArray{Float32,2},
                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
                 n_dims::Int32, act::Float32) = begin
@@ -133,26 +133,26 @@ update_grads!(in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
     end
 end
 
-ft_act(in, b, out, in_id, b_id, out_id, n_dims)::Float32 = begin
-    a = 0.
-    n_bs = length(b_id)
-    factor = 1. ./ (1. + n_bs)
-    i = 1
-    while i <= n_dims
-        temp = in[i, in_id]
-        b_i = 1
-        while b_i <= n_bs
-            temp += b[i, b_id[b_i]]
-            b_i += 1
-        end
-        a += temp .* factor .* out[i, out_id]
-        i += 1
-    end
-    sigm(a)
-end
+# ft_act(in, b, out, in_id, b_id, out_id, n_dims)::Float32 = begin
+#     a = 0.
+#     n_bs = length(b_id)
+#     factor = 1. ./ (1. + n_bs)
+#     i = 1
+#     while i <= n_dims
+#         temp = in[i, in_id]
+#         b_i = 1
+#         while b_i <= n_bs
+#             temp += b[i, b_id[b_i]]
+#             b_i += 1
+#         end
+#         a += temp .* factor .* out[i, out_id]
+#         i += 1
+#     end
+#     sigm(a)
+# end
 
 
-activation(buffer, out, out_id, n_dims) = begin
+_activation(buffer, out, out_id, n_dims) = begin
     a::Float32 = 0.
     i = 1
     while i <= n_dims
@@ -162,8 +162,11 @@ activation(buffer, out, out_id, n_dims) = begin
     sigm(a)
 end
 
-
-compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
+"""
+combine `in` representation and representations of `buckets` and
+store the result into `buffer`
+"""
+_compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     n_bs = length(b_ids)
     factor = 1. ./ (1. + n_bs)
     i = 1
@@ -197,7 +200,7 @@ process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_gra
     # define window region
     win_pos = max(1, pos-win_size); win_pos_end = min(length(tokens), pos+win_size)
 
-    # get pointers
+    # get pointers, it is easier to pass them to other functions
     in_ = shared_params.in; out_ = shared_params.out; b_ = shared_params.buckets
     in_g = shared_grads.in; out_g = shared_grads.out; b_g = shared_grads.buckets
 
@@ -263,6 +266,74 @@ process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_gra
     loss, processed
 end
 
+_process_context(buffer, f, win_size, lr, tokens, pos) = begin
+    # current context
+    context = tokens[pos]
+    in_id = f.w2id(context)
+    buckets = f.get_buckets(context)
+
+    # prepare to iterate buckets
+    bucket_ind = 1
+    n_buckets = length(buckets)
+
+    # consts
+    POS_LBL::Float32 = 1; NEG_LBL::Float32 = -1.
+
+    # define window region
+    win_pos = max(1, pos-win_size); win_pos_end = min(length(tokens), pos+win_size)
+
+    f.compute_in!(buffer, in_id, buckets)
+
+    # init
+    loss = 0.
+    act = 0.
+    processed = 0
+
+    lr_factor::Float32 = 1. / (1 + length(buckets))
+
+    while win_pos <= win_pos_end
+        if win_pos == pos; win_pos += 1; continue; end
+
+        out_target = tokens[win_pos]
+        out_id = f.w2id(out_target)
+
+        act = f.activation(buffer, out_id)
+        loss += -log(act)
+        processed += 1
+
+        f.update_grad_in!(in_id, out_id, POS_LBL, lr, lr_factor, act)
+
+        while bucket_ind <= n_buckets
+            b_id = buckets[bucket_ind]
+            f.update_grad_b!(b_id, out_id, POS_LBL, lr, lr_factor, act)
+            bucket_ind += 1
+        end
+        win_pos += 1
+    end
+
+    n_neg = 15
+    neg_ind = 1
+    bucket_ind = 1
+
+    while neg_ind <= n_neg
+        neg_out_id = f.sample_neg()
+
+        act = f.activation(buffer, neg_out_id)
+        loss += -log(1-act)
+        processed += 1
+
+        f.update_grad_in!(in_id, neg_out_id, NEG_LBL, lr, lr_factor, 1-act)
+
+        while bucket_ind <= n_buckets
+            b_id = buckets[bucket_ind]
+            f.update_grad_b!(b_id, neg_out_id, NEG_LBL, lr, lr_factor, 1-act)
+            bucket_ind += 1
+        end
+        neg_ind += 1
+    end
+    loss, processed
+end
+
 process_tokens(c_proc, tokens, learning_rate) = begin
     lr::Float32 = learning_rate / c.params.batch_size
     loss = 0.
@@ -278,12 +349,23 @@ end
 
 (c::SGCorpus)(;total_lines=0) = begin
 
-    sample_neg = get_neg_sampler(c)
-    get_buckets = get_bucket_fnct(c)
-    w2id = get_vocab_fnct(c)
+    funct = sg_tools(
+        get_in_representation_computer(c),
+        get_activation_computer(c),
+        get_in_grad_updater(c),
+        get_bucket_grad_updater(c),
+        get_vocab_fnct(c),
+        get_bucket_fnct(c),
+        get_neg_sampler(c)
+    )
+    # sample_neg = get_neg_sampler(c)
+    # get_buckets = get_bucket_fnct(c)
+    # w2id = get_vocab_fnct(c)
+
     scheduler = get_scheduler(c)
     eval = (tokens) -> 1. #evaluate(c, sample_neg, get_buckets, w2id, tokens)
-    c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
+    # c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
+    c_proc = get_context_processor2(c, funct)
 
     for epoch in 1:EPOCHS
 

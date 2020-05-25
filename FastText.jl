@@ -169,7 +169,8 @@ export_for_tb(m::FastText, path) = begin
     sorted_words = sort(collect(m.vocab.counts), by=x->x[2], rev=true)
     for (ind, (word, count)) in enumerate(sorted_words)
         word_ind = m.vocab.vocab[word]
-        emb = m.in[:, word_ind]
+        buckets = get_bucket_ids(m, word)
+        emb = m.in[:, word_ind] + sum(m.bucket[:, buckets]./ length(buckets), dims=2)[:]
         normalize!(emb)
         s = ""
         write(meta, "$word\n")

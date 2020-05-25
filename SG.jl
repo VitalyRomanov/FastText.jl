@@ -5,6 +5,7 @@ using .LanguageTools
 using .FT
 using StatsBase
 using Printf
+using SharedArrays
 
 
 struct SGParams
@@ -140,7 +141,7 @@ drop_tokens(c, tokens) = begin
     return buffer[1:buffer_pos-1]
 end
 
-_update_grads!(in_grad_flag::SharedArray{Bool}, out_grad_flag::SharedArray{Bool},
+_update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
                 in::SharedArray{Float32,2}, out::SharedArray{Float32,2},
                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
@@ -191,7 +192,7 @@ _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     end
 end
 
-_process_context(buffer, f, win_size, lr, tokens, pos) = begin
+_process_context(buffer, f, win_size, lr, n_neg, tokens, pos) = begin
     # current context
     context = tokens[pos]
     in_id = f.w2id(context)
@@ -223,6 +224,8 @@ _process_context(buffer, f, win_size, lr, tokens, pos) = begin
         out_id = f.w2id(out_target)
 
         act = f.activation(buffer, out_id)
+        if act > 0.999; processed += 1; win_pos += 1; continue; end
+        if act < 0.001; processed += 1; loss += 3.; win_pos += 1; continue; end
         loss += -log(act)
         processed += 1
 
@@ -236,7 +239,6 @@ _process_context(buffer, f, win_size, lr, tokens, pos) = begin
         win_pos += 1
     end
 
-    n_neg = 15
     neg_ind = 1
     bucket_ind = 1
 
@@ -244,6 +246,8 @@ _process_context(buffer, f, win_size, lr, tokens, pos) = begin
         neg_out_id = f.sample_neg()
 
         act = f.activation(buffer, neg_out_id)
+        if act < 0.001; processed += 1; neg_ind += 1; continue; end
+        if act > 0.999; processed += 1; loss += 3.; neg_ind += 1; continue; end
         loss += -log(1-act)
         processed += 1
 
@@ -304,7 +308,7 @@ get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
 end
 
 get_context_processor2(c::SGCorpus) =
-    (tokens, pos, lr) -> _process_context(zeros(Float32, c.params.n_dims), c.funct, c.params.win_size, lr, tokens, pos)
+    (tokens, pos, lr) -> _process_context(zeros(Float32, c.params.n_dims), c.funct, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, pos)
 
 
 compute_lapse(start, ind) = begin
@@ -429,6 +433,9 @@ end
 
         total_processed = 0
         loss = 0.
+        
+        # TODO
+        # preallocate array of fixed size for tokens
 
         start = time_ns()
         @time for (ind, line) in enumerate(eachline(c.file))

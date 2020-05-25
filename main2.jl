@@ -1,15 +1,20 @@
+# using Pkg
+# Pkg.activate(".")
+# Pkg.add("Revise")
+# Pkg.add("StatsBase")
+# Pkg.add("JLD2")
 using Revise
 
-using SharedArrays
+
 includet("SG.jl")
 
 # using Profile
 
-FILENAME = "wiki_00"
+# FILENAME = "wiki_00"
 EPOCHS = 1
 # FILENAME = "test.txt"
 # FILENAME = "/Users/LTV/Desktop/AA_t.txt"
-# FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
+FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA_J.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 
@@ -104,7 +109,7 @@ EPOCHS = 1
 
 
 process_tokens(c_proc, tokens, learning_rate) = begin
-    lr::Float32 = learning_rate / c.params.batch_size
+    lr::Float32 = learning_rate #/ c.params.batch_size
     loss = 0.
     processed = 0
     for pos in 1:length(tokens)
@@ -115,28 +120,37 @@ process_tokens(c_proc, tokens, learning_rate) = begin
     loss, processed
 end
 
-v = Vocab()
+learn_voc(file, voc_size) = begin
+
+    v = Vocab()
+
+    total_lines = 0
+    print("Learning vocabulary...")
+    for (ind, line) in enumerate(eachline(corpus_file))
+        # global total_lines
+        if length(v) < voc_size * 3
+            tokens = tokenize(line)
+            learnVocab!(v, tokens)
+        end
+        total_lines = ind
+    end
+    println("done")
+
+    v = prune(v, voc_size)
+    v, total_lines
+end
 
 corpus_file = open(FILENAME)
 
-total_lines = 0
-print("Learning vocabulary...")
-for (ind, line) in enumerate(eachline(corpus_file))
-    global total_lines
-    tokens = tokenize(line)
-    learnVocab!(v, tokens)
-    total_lines = ind
-end
-println("done")
-
-v = prune(v, 10000)
+v, total_lines = learn_voc(corpus_file, 50000)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.01, n_buckets=20000)
+c = SGCorpus(corpus_file, v, learning_rate=0.001, n_buckets=5000, neg_samples_per_context=20)
 
 println("Training Parameters:")
 @show c.params
 
+# using Juno
 ft = c(total_lines=total_lines)
 
 save_ft(ft, "en_300")

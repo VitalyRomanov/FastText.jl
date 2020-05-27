@@ -316,8 +316,8 @@ _process_context(buffer, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = 
         # skip updating gradients if activation is too strong
 
         act = f.activation(buffer, out_id)
-        if act > 0.99999; processed += 1; win_pos += 1; continue; end
-        if act < 0.00001; processed += 1; loss += 5.; win_pos += 1; continue; end
+        # if act > 0.99999; processed += 1; win_pos += 1; continue; end
+        # if act < 0.00001; processed += 1; loss += 5.; win_pos += 1; continue; end
         loss += -log(act)
         processed += 1
 
@@ -339,8 +339,8 @@ _process_context(buffer, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = 
         neg_out_id = f.sample_neg()
 
         act = f.activation(buffer, neg_out_id)
-        if act < 0.00001; processed += 1; neg_ind += 1; continue; end
-        if act > 0.99999; processed += 1; loss += 5.; neg_ind += 1; continue; end
+        # if act < 0.00001; processed += 1; neg_ind += 1; continue; end
+        # if act > 0.99999; processed += 1; loss += 5.; neg_ind += 1; continue; end
         loss += -log(1-act)
         processed += 1
 

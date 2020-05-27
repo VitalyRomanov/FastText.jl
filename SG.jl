@@ -7,6 +7,8 @@ using StatsBase
 using Printf
 using SharedArrays
 
+const MAX_SENT_LENGTH = 1000
+const TOK_RE = Regex("[\\w]+|[\\w]+[\\w-]+|[^\\w\\s]")
 
 struct SGParams
     n_dims::Int32
@@ -40,6 +42,7 @@ struct SGCorpus
     shared_params
     shared_grads
     funct
+    wPieces
 end
 
 struct ft_params
@@ -56,9 +59,12 @@ struct sg_tools
     activation
     update_grad_in!
     update_grad_b!
+    # update_grad_out!
     w2id
     get_buckets
     sample_neg
+    in_voc
+    discard
 end
 
 init_shared_params(voc_size, n_dims, n_buckets) = begin
@@ -67,7 +73,7 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
 
     in_shared .= randn(n_dims, voc_size) / n_dims
-    out_shared .= randn(n_dims, voc_size) / n_dims
+    out_shared .= 0. #randn(n_dims, voc_size) / n_dims # init these to zero
     bucket_shared .= randn(n_dims, n_buckets) / n_dims
 
     # in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
@@ -117,29 +123,57 @@ init_shared_grads(voc_size, n_dims, n_buckets) = begin
     )
 end
 
-drop_tokens(c, tokens) = begin
+get_tokens!(c, line, token_buffer) = begin
     # subsampling procedure
     # https://arxiv.org/pdf/1310.4546.pdf
-    buffer = Array{SubString}(undef, length(tokens))
     buffer_pos = 1
 
-    # in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
-    # discard_token(c::SGCorpus, w) = rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
-    in_voc = (w) -> w in keys(c.vocab.vocab)
-    discard_token = (w) -> rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+    global TOK_RE
+    tokens = eachmatch(TOK_RE, line)
 
-    UNK_TOKEN = "UNK"
-    for i in 1:length(tokens)
-        # if !(in_voc(c, tokens[i]))
-        #     tokens[i] = UNK_TOKEN
-        # end
-        if in_voc(tokens[i]) && !discard_token(tokens[i])
-            buffer[buffer_pos] = tokens[i]
-            buffer_pos += 1
+    for t in tokens
+        w = t.match
+        w_id_final = -1
+        if c.funct.in_voc(w)
+            w_id = c.vocab.vocab[w]
+            if !(w_id in keys(c.wPieces))
+                c.wPieces[w_id] = c.funct.get_buckets(w)
+            end
+            if true #!c.funct.discard(w)
+                w_id_final = w_id
+            end
         end
+        token_buffer[buffer_pos] = w_id_final
+        buffer_pos += 1
     end
-    return buffer[1:buffer_pos-1]
+
+    nTokens = buffer_pos - 1
 end
+
+# drop_tokens(c, tokens) = begin
+#     # subsampling procedure
+#     # https://arxiv.org/pdf/1310.4546.pdf
+#     buffer = Array{SubString}(undef, length(tokens))
+#     buffer_pos = 1
+#
+#     # create a dictionary that stores pieces
+#     # do not store the string tokens
+#     # store word ids in a fxed length array to avoid allocations
+#
+#     # in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
+#     # discard_token(c::SGCorpus, w) = rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+#     in_voc = (w) -> w in keys(c.vocab.vocab)
+#     discard_token = (w) -> rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
+#
+#     UNK_TOKEN = "UNK"
+#     for i in 1:length(tokens)
+#         if in_voc(tokens[i]) && !discard_token(tokens[i])
+#             buffer[buffer_pos] = tokens[i]
+#             buffer_pos += 1
+#         end
+#     end
+#     return buffer[1:buffer_pos-1]
+# end
 
 _update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
@@ -156,11 +190,66 @@ _update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Boo
     while i <= n_dims
         in_old = in[i, in_id]
         out_old = out[i, out_id]
-        in_grad[i, in_id] -= out_old .* w .* lr_factor
-        out_grad[i, out_id] -= in_old .* w
+        in_grad[i, in_id] += out_old .* w .* lr_factor
+        out_grad[i, out_id] += in_old .* w .* lr_factor
         i += 1
     end
 end
+
+# _update_grads2!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
+#                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
+#                 in::SharedArray{Float32,2}, out::SharedArray{Float32,2}, buffer::Array{Float32,1},
+#                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
+#                 n_dims::Int64, act::Float32) = begin
+#
+#     w::Float32 = -label .* (1 .- act) .* lr
+#
+#     in_grad_flag[in_id] = true
+#     out_grad_flag[out_id] = true
+#
+#     i = 1
+#     while i <= n_dims
+#         in_old = buffer[i]
+#         out_old = out[i, out_id]
+#         in_grad[i, in_id] -= out_old .* w .* lr_factor
+#         out_grad[i, out_id] -= in_old .* w
+#         i += 1
+#     end
+# end
+#
+# _update_grads_in!(in_grad_flag::SharedArray{Bool,1},
+#                 in_grad::SharedArray{Float32,2},
+#                 out::SharedArray{Float32,2},
+#                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
+#                 n_dims::Int64, act::Float32) = begin
+#
+#     w::Float32 = -label .* (1 .- act) .* lr
+#
+#     in_grad_flag[in_id] = true
+#
+#     i = 1
+#     while i <= n_dims
+#         in_grad[i, in_id] += out[i, out_id] .* w .* lr_factor
+#         i += 1
+#     end
+# end
+#
+# _update_grads_out!(out_grad_flag::SharedArray{Bool,1},
+#                 out_grad::SharedArray{Float32,2},
+#                 buffer::Array{Float32,1},
+#                 out_id::Int64, label::Float32, lr::Float32,
+#                 n_dims::Int64, act::Float32) = begin
+#
+#     w::Float32 = -label .* (1 .- act) .* lr
+#
+#     out_grad_flag[out_id] = true
+#
+#     i = 1
+#     while i <= n_dims
+#         out_grad[i, out_id] += buffer[i] .* w
+#         i += 1
+#     end
+# end
 
 _activation(buffer, out, out_id, n_dims) = begin
     a::Float32 = 0.
@@ -192,11 +281,15 @@ _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     end
 end
 
-_process_context(buffer, f, win_size, lr, n_neg, tokens, pos) = begin
+_process_context(buffer, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = begin
+    # init
+    loss = 0.
+    processed = 0
     # current context
-    context = tokens[pos]
-    in_id = f.w2id(context)
-    buckets = f.get_buckets(context)
+    in_id = tokens[pos]
+    if in_id == -1; return loss, processed; end
+
+    buckets = wPieces[in_id]
 
     # prepare to iterate buckets
     bucket_ind = 1
@@ -206,29 +299,29 @@ _process_context(buffer, f, win_size, lr, n_neg, tokens, pos) = begin
     POS_LBL::Float32 = 1; NEG_LBL::Float32 = -1.
 
     # define window region
-    win_pos = max(1, pos-win_size); win_pos_end = min(length(tokens), pos+win_size)
+    win_pos = max(1, pos-win_size); win_pos_end = min(n_tok, pos+win_size)
 
     f.compute_in!(buffer, in_id, buckets)
 
     # init
-    loss = 0.
     act = 0.
-    processed = 0
+
 
     lr_factor::Float32 = 1. / (1 + length(buckets))
 
     while win_pos <= win_pos_end
-        if win_pos == pos; win_pos += 1; continue; end
+        out_id = tokens[win_pos]
+        if win_pos == pos || out_id == -1; win_pos += 1; continue; end
 
-        out_target = tokens[win_pos]
-        out_id = f.w2id(out_target)
+        # skip updating gradients if activation is too strong
 
         act = f.activation(buffer, out_id)
-        if act > 0.999; processed += 1; win_pos += 1; continue; end
-        if act < 0.001; processed += 1; loss += 3.; win_pos += 1; continue; end
+        if act > 0.99999; processed += 1; win_pos += 1; continue; end
+        if act < 0.00001; processed += 1; loss += 5.; win_pos += 1; continue; end
         loss += -log(act)
         processed += 1
 
+        # f.update_grad_out!(out_id, buffer, POS_LBL, lr, act)
         f.update_grad_in!(in_id, out_id, POS_LBL, lr, lr_factor, act)
 
         while bucket_ind <= n_buckets
@@ -246,11 +339,12 @@ _process_context(buffer, f, win_size, lr, n_neg, tokens, pos) = begin
         neg_out_id = f.sample_neg()
 
         act = f.activation(buffer, neg_out_id)
-        if act < 0.001; processed += 1; neg_ind += 1; continue; end
-        if act > 0.999; processed += 1; loss += 3.; neg_ind += 1; continue; end
+        if act < 0.00001; processed += 1; neg_ind += 1; continue; end
+        if act > 0.99999; processed += 1; loss += 5.; neg_ind += 1; continue; end
         loss += -log(1-act)
         processed += 1
 
+        # f.update_grad_out!(neg_out_id, buffer, NEG_LBL, lr, act)
         f.update_grad_in!(in_id, neg_out_id, NEG_LBL, lr, lr_factor, 1-act)
 
         while bucket_ind <= n_buckets
@@ -279,7 +373,7 @@ init_negative_sampling(v) = begin
     probs_ = StatsBase.Weights(probs)
     # (size) -> StatsBase.sample(indices, probs_, size)
     # (size) -> map(id -> reverseMap[id], StatsBase.sample(indices, size))
-    () -> StatsBase.sample(indices)
+    () -> StatsBase.sample(indices, probs_)
 end
 
 
@@ -298,17 +392,17 @@ get_scheduler(c) = begin
     scheduler
 end
 
-get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
-    shared_params = c.shared_params
-    shared_grads = c.shared_grads
-    win_size = c.params.win_size
-    n_dims = c.params.n_dims
-    buffer = zeros(Float32, n_dims)
-    (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
-end
+# get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
+#     shared_params = c.shared_params
+#     shared_grads = c.shared_grads
+#     win_size = c.params.win_size
+#     n_dims = c.params.n_dims
+#     buffer = zeros(Float32, n_dims)
+#     (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
+# end
 
 get_context_processor2(c::SGCorpus) =
-    (tokens, pos, lr) -> _process_context(zeros(Float32, c.params.n_dims), c.funct, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, pos)
+    (tokens, n_tok, pos, lr) -> _process_context(zeros(Float32, c.params.n_dims), c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, n_tok, pos)
 
 
 compute_lapse(start, ind) = begin
@@ -330,7 +424,7 @@ _apply_g!(atomic, par, grad, n_dims) = begin
         if atomic[i] == false; i += 1; continue; end
         d = 1
         while d <= n_dims
-            par[d, i] += grad[d, i]
+            par[d, i] -= grad[d, i]
             grad[d, i] = 0.
             d += 1
         end
@@ -379,7 +473,7 @@ end
 
 SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
         win_size=5, learning_rate=0.01, neg_samples_per_context=15,
-        subsampling_parameter=1e-4, batch_size=1) = begin
+        subsampling_parameter=1e-4, batch_size=128) = begin
 
     shared_params = init_shared_params(length(vocab), n_dims, n_buckets)
     shared_grads = init_shared_grads(length(vocab), n_dims, n_buckets)
@@ -394,9 +488,22 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     out_g_f = shared_grads.atomic_out
     b_g_f = shared_grads.atomic_buckets
 
+    params = SGParams(n_dims, n_buckets, length(vocab), win_size,
+        min_ngram, max_ngram, neg_samples_per_context, subsampling_parameter,
+        learning_rate, batch_size)
+
     compute_in! = (buffer, in_id, bucket_ids) -> _compute_in!(buffer,
             in_, b_, in_id, bucket_ids, n_dims)
     activation = (buffer, out_id) -> _activation(buffer, out_, out_id, n_dims)
+    # in_grad_u! = (in_id, out_id, label, lr, lr_factor, act) ->
+    #     _update_grads_in!(in_g_f, in_g, out_,
+    #                     in_id, out_id, label, lr, lr_factor, n_dims, act)
+    # b_grad_u! = (b_id, out_id, label, lr, lr_factor, act) ->
+    #     _update_grads_in!(b_g_f, b_g, out_,
+    #                     b_id, out_id, label, lr, lr_factor, n_dims, act)
+    # out_grad_u! = (out_id, buffer, label, lr, act) ->
+    #     _update_grads_out!(out_g_f, out_g, buffer,
+    #                     out_id, label, lr, n_dims, act)
     in_grad_u! = (in_id, out_id, label, lr, lr_factor, act) ->
         _update_grads!(in_g_f, out_g_f, in_g, out_g, in_, out_,
                         in_id, out_id, label, lr, lr_factor, n_dims, act)
@@ -406,20 +513,23 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     w2id = (w) -> get(vocab.vocab, w, -1)
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
     neg_sampler = init_negative_sampling(vocab)
+    in_voc = (w) -> w in keys(vocab.vocab)
+    discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w]))
 
-    funct = sg_tools(compute_in!, activation, in_grad_u!, b_grad_u!, w2id,
-                get_buckets, neg_sampler)
 
-    params = SGParams(n_dims, n_buckets, length(vocab), win_size,
-        min_ngram, max_ngram, neg_samples_per_context, subsampling_parameter,
-        learning_rate, batch_size)
+    funct = sg_tools(compute_in!, activation, in_grad_u!, b_grad_u!, #out_grad_u!,
+                w2id, get_buckets, neg_sampler, in_voc, discard_token)
 
-    SGCorpus(file, vocab, params, shared_params, shared_grads, funct)
+
+
+    SGCorpus(file, vocab, params, shared_params, shared_grads, funct, Dict{Int64, Array{Int64,1}}())
 end
 
 
 (c::SGCorpus)(;total_lines=0) = begin
 
+    global MAX_SENT_LENGTH
+    token_buffer = -ones(Int64, MAX_SENT_LENGTH)
 
     scheduler = get_scheduler(c)
     # c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
@@ -433,23 +543,23 @@ end
 
         total_processed = 0
         loss = 0.
-        
+
         # TODO
         # preallocate array of fixed size for tokens
 
         start = time_ns()
         @time for (ind, line) in enumerate(eachline(c.file))
-            tokens = drop_tokens(c, tokenize(line))
-            # @show tokens
-            if length(tokens) > 1
-                l, t = process_tokens(c_proc, tokens, learning_rate)
+            n_tokens = get_tokens!(c, line, token_buffer)
+
+            if n_tokens > 1
+                l, t = process_tokens(c_proc, token_buffer, n_tokens, learning_rate)
                 loss += l; total_processed += t
             end
 
             if ind % 100 == 0
                 passed_seconds, time_left = compute_lapse(start, ind)
-                if length(tokens) > 1
-                    @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.4f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 loss/total_processed learning_rate
+                if n_tokens > 1
+                    @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.8f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 loss/total_processed learning_rate
                 end
             end
 
@@ -474,3 +584,65 @@ end
     FastText(in_m, out_m, bucket_m, c.vocab,
         c.params.min_ngram, c.params.max_ngram)
 end
+
+# (c::SGCorpus)(;total_lines=0) = begin
+#
+#     global MAX_SENT_LENGTH
+#     token_buffer = -ones(Int64, MAX_SENT_LENGTH)
+#
+#     scheduler = get_scheduler(c)
+#     # c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
+#     c_proc = get_context_processor2(c)
+#
+#     for epoch in 1:EPOCHS
+#
+#         seekstart(c.file)
+#
+#         learning_rate = c.params.learning_rate
+#
+#         total_processed = 0
+#         loss = 0.
+#
+#         # TODO
+#         # preallocate array of fixed size for tokens
+#
+#         start = time_ns()
+#         @time for (ind, line) in enumerate(eachline(c.file))
+#             # n_tokens = get_tokens!(c, line, token_buffer)
+#             # tokens = collect(map((t) -> get(c.vocab.vocab, t, -1), tokenize(line)))
+#             # tokens = tokenize(line)
+#             # @show 1, token_buffer[1:n_tokens]
+#             # @show 2, tokens
+#             # if length(tokens) > 1
+#             #     l, t = process_tokens(c_proc, tokens, learning_rate)
+#             #     loss += l; total_processed += t
+#             # end
+#             #
+#             # if ind % 100 == 0
+#             #     passed_seconds, time_left = compute_lapse(start, ind)
+#             #     if length(tokens) > 1
+#             #         @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.8f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 loss/total_processed learning_rate
+#             #     end
+#             # end
+#             #
+#             # if total_processed > c.params.batch_size
+#             #     apply_grads(c)
+#             #     # check_weights(c)
+#             #     total_processed = 0
+#             #     loss = 0.
+#             # end
+#         end
+#         println("")
+#     end
+#
+#     in_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
+#     out_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
+#     bucket_m = zeros(Float32, c.params.n_dims, c.params.n_buckets)
+#
+#     in_m[:] = c.shared_params.in[:]
+#     out_m[:] = c.shared_params.out[:]
+#     bucket_m[:] = c.shared_params.buckets[:]
+#
+#     FastText(in_m, out_m, bucket_m, c.vocab,
+#         c.params.min_ngram, c.params.max_ngram)
+# end

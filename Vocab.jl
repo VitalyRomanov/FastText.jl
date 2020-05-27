@@ -8,7 +8,7 @@ module Vocabulary
         totalWords
     end
 
-    Vocab() = Vocab(Dict(), Dict(), 0::Integer)
+    Vocab() = Vocab(Dict{AbstractString, Int64}(), Dict{AbstractString, Int64}(), 0::Integer)
 
     learnVocab!(v::Vocab, tokens) = begin
         for token in tokens
@@ -31,9 +31,9 @@ module Vocabulary
     prune(v::Vocab, size::Integer) = begin
         sorted_words = sort(collect(v.counts), by=x->x[2], rev=true)
         sorted_words = sorted_words[1:min(length(sorted_words), size)]
-        
-        vocab = Dict()
-        counts = Dict()
+
+        vocab = Dict{AbstractString, Int64}()
+        counts = Dict{AbstractString, Int64}()
         totalWords = 0
         for (word, count) in sorted_words
             vocab[word] = length(vocab) + 1
@@ -41,10 +41,11 @@ module Vocabulary
             totalWords += count
         end
 
-        vocab[UNK_TOKEN] = length(vocab) + 1
-        counts[UNK_TOKEN] = v.totalWords - totalWords
-
+        # vocab[UNK_TOKEN] = length(vocab) + 1
+        # counts[UNK_TOKEN] = v.totalWords - totalWords
+        #
         Vocab(vocab, counts, v.totalWords)
+        # Vocab(vocab, counts, totalWords)
     end
 
     get_prob(v::Vocab, word) = get(v.counts, word, 0) / (v.totalWords + 1)

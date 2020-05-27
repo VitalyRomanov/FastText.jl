@@ -147,9 +147,11 @@ export_w2v(m::FastText, path) = begin
     write(sink, "$(size(m.in)[2]) $(size(m.in)[1])\n")
 
     n_dims = size(m.in)[1]
-    for word in keys(m.vocab.vocab)
+    sorted_words = sort(collect(m.vocab.counts), by=x->x[2], rev=true)
+    for (ind, (word, count)) in enumerate(sorted_words)
         word_ind = m.vocab.vocab[word]
-        emb = m.in[:, word_ind]
+        buckets = get_bucket_ids(m, word)
+        emb = m.in[:, word_ind] + sum(m.bucket[:, buckets]./ length(buckets), dims=2)[:]
         normalize!(emb)
         write(sink, "$word")
         for i = 1:n_dims

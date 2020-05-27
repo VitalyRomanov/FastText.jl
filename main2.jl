@@ -128,10 +128,10 @@ learn_voc(file, voc_size) = begin
     print("Learning vocabulary...")
     for (ind, line) in enumerate(eachline(corpus_file))
         # global total_lines
-        if length(v) < voc_size * 3
+        # if length(v) < voc_size * 3
             tokens = tokenize(line)
             learnVocab!(v, tokens)
-        end
+        # end
         total_lines = ind
     end
     println("done")
@@ -145,7 +145,7 @@ corpus_file = open(FILENAME)
 v, total_lines = learn_voc(corpus_file, 50000)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=0.01, n_buckets=5000, neg_samples_per_context=20)
+c = SGCorpus(corpus_file, v, learning_rate=1e-3, n_buckets=5000, neg_samples_per_context=20)
 
 println("Training Parameters:")
 @show c.params

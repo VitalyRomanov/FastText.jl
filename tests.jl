@@ -85,119 +85,6 @@ test _update_grads! and _apply_g!
 
 end
 
-
-# """
-# test the correctnes of gradient calculations
-# """
-# @test begin
-#     in_g_f =  SharedArray{Bool}(4); in_g_f .= false
-#     out_g_f =  SharedArray{Bool}(4); out_g_f .= false
-#     b_g_f =  SharedArray{Bool}(4); b_g_f .=false
-#
-#     in_g =  SharedArray{Float32}(4, 4); in_g .= 0.
-#     out_g =  SharedArray{Float32}(4, 4); out_g .= 0.
-#     b_g =  SharedArray{Float32}(4, 4); b_g .= 0.
-#
-#     in_ =  SharedArray{Float32}(4, 4); in_[:] = randn(16)
-#     out_ =  SharedArray{Float32}(4, 4); out_[:] = randn(16)
-#     b_ =  SharedArray{Float32}(4, 4); b_[:] = randn(16)
-#
-#     out_id = 1; in_id = 1; b_ids = [1,2,3,4]; n_dims = 4
-#     lbl::Float32 = 1.; lr::Float32 = 1.; lr_f::Float32 = 1/5.
-#     eps = 0.1
-#
-#     get_act() = begin
-#         buffer = zeros(4)
-#         _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims)
-#
-#         act = _activation(buffer, out_, out_id, n_dims)
-#     end
-#
-#     get_grad(param, row_id, col_id) = begin
-#         initial_val = param[row_id, col_id]
-#         param[row_id, col_id] -= eps; act1 = -log(get_act())
-#         param[row_id, col_id] += 2 * eps; act2 = -log(get_act())
-#         param[row_id, col_id] = initial_val
-#         grad = (act2 - act1) / (2 * eps)
-#     end
-#
-#     upd_g_out(in_id, out_id, lbl) = begin
-#         buffer = zeros(Float32, 4)
-#         _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims)
-#         act = _activation(buffer, out_, out_id, n_dims)
-#         _update_grads_out!(out_g_f, out_g, buffer, out_id, lbl, lr,
-#                         n_dims, act)
-#     end
-#
-#     upd_g_in(in_id, out_id, lbl) = begin
-#         buffer = zeros(Float32, 4)
-#         _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims)
-#         act = _activation(buffer, out_, out_id, n_dims)
-#         _update_grads_in!(in_g_f, in_g, out_, in_id, out_id, lbl, lr, lr_f,
-#                         n_dims, act)
-#     end
-#
-#     upd_g_b(b_id, out_id, lbl) = begin
-#         buffer = zeros(Float32, 4)
-#         _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims)
-#         act = _activation(buffer, out_, out_id, n_dims)
-#         _update_grads_in!(b_g_f, b_g, out_, b_id, out_id, lbl, lr, lr_f,
-#                         n_dims, act)
-#     end
-#
-#     # lbl::Float32 = 1.
-#
-#     row_id = 1; col_id = 1;
-#     grad = get_grad(out_, row_id, col_id)
-#     upd_g_out(in_id, col_id, lbl)
-#     out_pos = (out_g[row_id, col_id] - grad) / grad < 0.01
-#     println("out pos", grad, " ", out_g[row_id, col_id], " ", out_g[row_id, col_id] - grad, " ", out_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#     row_id = 1; col_id = 1;
-#     grad = get_grad(in_, row_id, col_id)
-#     upd_g_in(col_id, out_id, lbl)
-#     in_pos = (in_g[row_id, col_id] - grad) / grad < 0.01
-#     println("in pos", grad, " ", in_g[row_id, col_id], " ", in_g[row_id, col_id] - grad, " ", in_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#     row_id = 1; col_id = 1;
-#     grad = get_grad(b_, row_id, col_id)
-#     upd_g_b(col_id, out_id, lbl)
-#     b_pos = (b_g[row_id, col_id] - grad) / grad < 0.01
-#     println("b pos", grad, " ", b_g[row_id, col_id], " ", b_g[row_id, col_id] - grad, " ", b_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#     lbl = -1.
-#
-#     row_id = 1; col_id = 1;
-#     grad = - get_grad(out_, row_id, col_id)
-#     upd_g_out(in_id, col_id, lbl)
-#     out_neg = (out_g[row_id, col_id] - grad) / grad < 0.01
-#     println("out neg", grad, " ", out_g[row_id, col_id], " ", out_g[row_id, col_id] - grad, " ", out_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#     row_id = 1; col_id = 1;
-#     grad = - get_grad(in_, row_id, col_id)
-#     upd_g_in(col_id, out_id, lbl)
-#     in_neg = (in_g[row_id, col_id] - grad) / grad < 0.01
-#     println("in neg", grad, " ", in_g[row_id, col_id], " ", in_g[row_id, col_id] - grad, " ", in_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#     row_id = 1; col_id = 1;
-#     grad = - get_grad(b_, row_id, col_id)
-#     upd_g_b(col_id, out_id, lbl)
-#     b_neg = (b_g[row_id, col_id] - grad) / grad < 0.01
-#     println("b neg", grad, " ", b_g[row_id, col_id], " ", b_g[row_id, col_id] - grad, " ", b_g[row_id, col_id] / grad)
-#     in_g .= 0.; out_g .= 0.; b_g .= 0.
-#
-#
-#     # println("", grad, " ", in_g[row_id, col_id], " ", in_g[row_id, col_id] - grad, " ", in_g[row_id, col_id] / grad)
-#     true
-#     # out_pos && in_pos && b_pos && out_neg && in_neg && b_neg
-# end
-
-
 """
 test the correctnes of gradient calculations
 """
@@ -278,47 +165,69 @@ test_grads() = begin
 end
 @test test_grads() < 0.01
 
+"""
+test vocabulary
+"""
+test_vocabulary() = begin
+    v = Vocab()
+    tokens = ["b","b","b","b","c","c","c","d","d","e", "a","a","a","a","a"]
+    learnVocab!(v, tokens)
+    @test v.vocab["a"] == 5 || v.vocab["b"] == 1 || v.vocab["c"] == 2 ||
+          v.vocab["d"] == 3 || v.vocab["e"] == 4
+    @test v.counts["a"] == 5 || v.counts["b"] == 4 || v.counts["c"] == 3 ||
+        v.counts["d"] == 2 || v.counts["e"] == 1
 
-# @test begin
-#     in_g =  SharedArray{Float32}(4, 4); in_g .= 0.
-#     out_g =  SharedArray{Float32}(4, 4); out_g .= 0.
-#     b_g =  SharedArray{Float32}(4, 4); b_g .= 0.
-#
-#     in_ =  SharedArray{Float32}(4, 4); in_[:] = randn(16)
-#     out_ =  SharedArray{Float32}(4, 4); out_[:] = randn(16)
-#     b_ =  SharedArray{Float32}(4, 4); b_[:] = randn(16)
-#
-#     out_id = 1; in_id = 1; b_ids = [1,2,3,4]; n_dims = 4
-#     lbl::Float32 = 1.; lr::Float32 = 1.; lr_f::Float32 = 1.
-#     eps = 0.001
-#
-#     get_act() = begin
-#         in_v = in_[:, in_id]# + sum(b_[:, b_ids], dims=2)[:]
-#         out_v = out_[:, out_id]
-#
-#         act = sigm(sum(in_v .* out_v))
-#     end
-#
-#     param_id = 1
-#     under_inv = out_
-#     initial_val = under_inv[param_id]
-#     under_inv[param_id] -= eps; act1 = -log(get_act())
-#     under_inv[param_id] += 2 * eps; act2 = -log(get_act())
-#     grad = (act2 - act1) / (2 * eps)
-#     under_inv[param_id] = initial_val
-#
-#     get_grad = (in_id, out_id, label) -> begin
-#         in_v = in_[:, in_id]# + sum(b_[:, b_ids], dims=2)[:]
-#         out_v = out_[:, out_id]
-#         act = sigm(sum(in_v .* out_v))
-#
-#         w = act - label
-#         in_g[:, in_id] = out_[:, out_id] .* w
-#         out_g[:, out_id] = in_[:, in_id] .* w
-#     end
-#
-#     get_grad(in_id, out_id, lbl)
-#
-#     println(grad, " ", out_g[param_id], " ", out_g[param_id] / grad, " ", out_g[param_id] - grad)
-#     true
-# end
+    v = prune(v,3)
+    @test v.vocab["a"] == 1 || v.vocab["b"] == 2 || v.vocab["c"] == 3
+    @test v.counts["a"] == 5 || v.counts["b"] == 4 || v.counts["c"] == 3
+    @test length(v) == 3
+    @test v.totalWords == 15
+
+end
+test_vocabulary()
+
+"""
+test negative sampling
+"""
+test_ns() = begin
+    v = Vocab()
+    # tokens = ["b","b","b","b","c","c","c","d","d","e", "a","a","a","a","a"]
+    tokens = tokenize(read("wiki_00", String))
+    learnVocab!(v, tokens)
+    prune(v, length(v))
+
+    smpl_neg = init_negative_sampling(v)
+    # @show sizeof(smpl_neg)
+
+    n_experiments = v.totalWords * 20
+    bins = zeros(Float32, length(v))
+    for i = 1:n_experiments
+        bins[smpl_neg()] += 1
+    end
+    bins ./= n_experiments
+
+    ordered_words = sort(collect(v.vocab), by=x->x[2])
+    probs = zeros(length(ordered_words))
+    for (w, id) in ordered_words
+        probs[id] = v.counts[w] / v.totalWords
+    end
+    probs .^= 3/4
+    probs ./= sum(probs)
+    err = sum(abs.(probs - bins) ./ probs) / length(v)
+    # err = maximum(abs.(probs - bins))
+    # ind = argmax(abs.(probs - bins) ./ probs)
+    # @show err
+    # @show probs
+    # @show bins
+    # @show sum(bins)
+    ## @show [v.counts["a"], v.counts["a"], v.counts["a"], v.counts["a"], v.counts["a"]]
+    # @show v.vocab["a"]
+    # @show v.vocab["b"]
+    # @show v.vocab["c"]
+    # @show v.vocab["d"]
+    # @show v.vocab["e"]
+    @test err < 0.1
+    # @show err
+    # @show probs[ind], abs(probs[ind] - bins[ind]) / probs[ind]
+end
+test_ns()

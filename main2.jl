@@ -14,7 +14,7 @@ includet("SG.jl")
 EPOCHS = 1
 # FILENAME = "test.txt"
 # FILENAME = "/Users/LTV/Desktop/AA_t.txt"
-FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
+FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA_J.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 
@@ -128,10 +128,10 @@ learn_voc(file, voc_size) = begin
     print("Learning vocabulary...")
     for (ind, line) in enumerate(eachline(corpus_file))
         # global total_lines
-        # if length(v) < voc_size * 3
+        if length(v) < voc_size * 10
             tokens = tokenize(line)
             learnVocab!(v, tokens)
-        # end
+        end
         total_lines = ind
     end
     println("done")

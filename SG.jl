@@ -178,7 +178,7 @@ get_tokens!(c, line, token_buffer) = begin
     # https://arxiv.org/pdf/1310.4546.pdf
     buffer_pos = 1
 
-    global TOK_RE
+    global TOK_RE, MAX_SENT_LENGTH
     tokens = eachmatch(TOK_RE, line)
 
     for t in tokens
@@ -195,6 +195,7 @@ get_tokens!(c, line, token_buffer) = begin
         end
         token_buffer[buffer_pos] = w_id_final
         buffer_pos += 1
+        if buffer_pos > MAX_SENT_LENGTH; break; end
     end
 
     nTokens = buffer_pos - 1
@@ -320,23 +321,23 @@ store the result into `buffer`
 _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     n_bs = length(b_ids)
     factor = 1. ./ (1. + n_bs)
-    # i = 1
-    # while i <= n_dims
-    #     buffer[i] = in_[i, in_id]
-    #     b_i = 1
-    #     while b_i <= n_bs
-    #         buffer[i] += b_[i, b_ids[b_i]]
-    #         b_i += 1
-    #     end
-    #     buffer[i] *= factor
-    #     i += 1
-    # end
-
-    buffer .= @views in_[:, in_id]
-    for b_id in b_ids
-        buffer .+= @views b_[:, b_id]
+    i = 1
+    while i <= n_dims
+        buffer[i] = in_[i, in_id]
+        b_i = 1
+        while b_i <= n_bs
+            buffer[i] += b_[i, b_ids[b_i]]
+            b_i += 1
+        end
+        buffer[i] *= factor
+        i += 1
     end
-    buffer .*= factor
+
+    # buffer .= @views in_[:, in_id]
+    # for b_id in b_ids
+    #     buffer .+= @views b_[:, b_id]
+    # end
+    # buffer .*= factor
 
     # buffer .= @views (in_[:, in_id] .+ sum(b_[:, b_ids], dims=2)[:]) .* factor
 end

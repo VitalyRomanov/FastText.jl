@@ -14,7 +14,7 @@ includet("SG.jl")
 EPOCHS = 1
 # FILENAME = "test.txt"
 # FILENAME = "/Users/LTV/Desktop/AA_t.txt"
-FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA_J.txt"
+FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 
 
@@ -136,7 +136,7 @@ learn_voc(file, voc_size) = begin
     end
     println("done")
 
-    v = prune(v, voc_size)
+    v = prune(v, voc_size, 5)
     v, total_lines
 end
 
@@ -145,7 +145,7 @@ corpus_file = open(FILENAME)
 v, total_lines = learn_voc(corpus_file, 50000)
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=1e-3, n_buckets=5000, neg_samples_per_context=20)
+c = SGCorpus(corpus_file, v, learning_rate=1e-2, n_buckets=200000, neg_samples_per_context=2, max_ngram=3)
 
 println("Training Parameters:")
 @show c.params

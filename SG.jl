@@ -122,9 +122,9 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     out_shared = SharedArray{Float32}(n_dims, voc_size)
     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
 
-    in_shared .= randn(n_dims, voc_size) / n_dims
+    in_shared .= (rand(n_dims, voc_size) .- 0.5) / n_dims
     out_shared .= 0. #randn(n_dims, voc_size) / n_dims # init these to zero
-    bucket_shared .= randn(n_dims, n_buckets) / n_dims
+    bucket_shared .= (rand(n_dims, n_buckets) .- 0.5) / n_dims
 
     # in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
     # out_shared .= out_shared ./ sqrt.(sum(out_shared .* out_shared, dims=1))
@@ -189,9 +189,13 @@ get_tokens!(c, line, token_buffer) = begin
             if !(w_id in keys(c.wPieces))
                 c.wPieces[w_id] = c.funct.get_buckets(w)
             end
-            if !c.funct.discard(w)
-                w_id_final = w_id
+            if c.funct.discard(w)
+                continue
             end
+            w_id_final = w_id
+            # if !c.funct.discard(w)
+            #     w_id_final = w_id
+            # end
         end
         token_buffer[buffer_pos] = w_id_final
         buffer_pos += 1
@@ -342,7 +346,23 @@ _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     # buffer .= @views (in_[:, in_id] .+ sum(b_[:, b_ids], dims=2)[:]) .* factor
 end
 
-_process_context(buffer, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = begin
+apply(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1}, w::Float32, n_dims::Int32) = begin
+    d = 1
+    while d <= n_dims
+        params[d, id] -= update[d] * w
+        d += 1
+    end
+end
+
+update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1}, w::Float32, n_dims::Int32) = begin
+    d = 1
+    while d <= n_dims
+        update[d] += params[d, id] * w
+        d += 1
+    end
+end
+
+_process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = begin
     # init
     loss = 0.
     processed = 0
@@ -368,53 +388,101 @@ _process_context(buffer, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = 
     act = 0.
 
 
-    lr_factor::Float32 = 1. / (1 + length(buckets))
+    lr_factor::Float32 = 1. #/ (1 + length(buckets))
+
 
     while win_pos <= win_pos_end
         out_id = tokens[win_pos]
         if win_pos == pos || out_id == -1; win_pos += 1; continue; end
 
-        # skip updating gradients if activation is too strong
+        buffer_out .= 0
 
-        act = f.activation(buffer, out_id)
-        # if act > 0.99999; processed += 1; win_pos += 1; continue; end
-        # if act < 0.00001; processed += 1; loss += 5.; win_pos += 1; continue; end
-        loss += -log(act)
-        processed += 1
+        neg_ind = 0
+        while neg_ind <= n_neg
+            if neg_ind == 0
+                out_id = tokens[win_pos]
+                lbl = POS_LBL
+            else
+                out_id = f.sample_neg()
+                lbl = NEG_LBL
+            end
 
-        # f.update_grad_out!(out_id, buffer, POS_LBL, lr, act)
-        f.update_grad_in!(in_id, out_id, POS_LBL, lr, lr_factor, act)
+            act = f.activation(buffer, out_id)
+            if lbl == POS_LBL
+                if act > 0.99; processed += 1; neg_ind += 1; continue; end
+                if act < 0.01; processed += 1; loss += 5.; neg_ind += 1; continue; end
+            else
+                if act > 0.99; processed += 1; loss += 5.; neg_ind += 1; continue; end
+                if act < 0.01; processed += 1; neg_ind += 1; continue; end
+            end
+            loss += - log(if lbl == POS_LBL; act; else; 1 - act; end)
+            processed += 1
 
+            g = (act - lbl) * lr
+
+            update_buf(c.shared_params.out, out_id, buffer_out, g, c.params.n_dims)
+            # buffer_out .+= @views c.shared_params.out[:, out_id] .* g
+
+            apply(c.shared_params.out, out_id, buffer, g, c.params.n_dims)
+            neg_ind += 1
+        end
+
+        apply(c.shared_params.in, in_id, buffer_out, lr_factor, c.params.n_dims)
+        bucket_ind = 1
         while bucket_ind <= n_buckets
             b_id = buckets[bucket_ind]
-            f.update_grad_b!(b_id, out_id, POS_LBL, lr, lr_factor, act)
+            apply(c.shared_params.buckets, b_id, buffer_out, lr_factor, c.params.n_dims)
             bucket_ind += 1
         end
         win_pos += 1
     end
 
-    neg_ind = 1
-    bucket_ind = 1
 
-    while neg_ind <= n_neg
-        neg_out_id = f.sample_neg()
-
-        act = f.activation(buffer, neg_out_id)
-        # if act < 0.00001; processed += 1; neg_ind += 1; continue; end
-        # if act > 0.99999; processed += 1; loss += 5.; neg_ind += 1; continue; end
-        loss += -log(1-act)
-        processed += 1
-
-        # f.update_grad_out!(neg_out_id, buffer, NEG_LBL, lr, act)
-        f.update_grad_in!(in_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
-
-        while bucket_ind <= n_buckets
-            b_id = buckets[bucket_ind]
-            f.update_grad_b!(b_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
-            bucket_ind += 1
-        end
-        neg_ind += 1
-    end
+    # while win_pos <= win_pos_end
+    #     out_id = tokens[win_pos]
+    #     if win_pos == pos || out_id == -1; win_pos += 1; continue; end
+    #
+    #     # skip updating gradients if activation is too strong
+    #
+    #     act = f.activation(buffer, out_id)
+    #     # if act > 0.99; processed += 1; win_pos += 1; continue; end
+    #     # if act < 0.01; processed += 1; loss += 5.; win_pos += 1; continue; end
+    #     loss += -log(act)
+    #     processed += 1
+    #
+    #     # f.update_grad_out!(out_id, buffer, POS_LBL, lr, act)
+    #     f.update_grad_in!(in_id, out_id, POS_LBL, lr, lr_factor, act)
+    #
+    #     while bucket_ind <= n_buckets
+    #         b_id = buckets[bucket_ind]
+    #         f.update_grad_b!(b_id, out_id, POS_LBL, lr, lr_factor, act)
+    #         bucket_ind += 1
+    #     end
+    #     win_pos += 1
+    # end
+    #
+    # neg_ind = 1
+    # bucket_ind = 1
+    #
+    # while neg_ind <= n_neg
+    #     neg_out_id = f.sample_neg()
+    #
+    #     act = f.activation(buffer, neg_out_id)
+    #     # if act < 0.01; processed += 1; neg_ind += 1; continue; end
+    #     # if act > 0.99; processed += 1; loss += 5.; neg_ind += 1; continue; end
+    #     loss += -log(1-act)
+    #     processed += 1
+    #
+    #     # f.update_grad_out!(neg_out_id, buffer, NEG_LBL, lr, act)
+    #     f.update_grad_in!(in_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
+    #
+    #     while bucket_ind <= n_buckets
+    #         b_id = buckets[bucket_ind]
+    #         f.update_grad_b!(b_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
+    #         bucket_ind += 1
+    #     end
+    #     neg_ind += 1
+    # end
     loss, processed
 end
 
@@ -450,6 +518,7 @@ init_negative_sampling(v) = begin
             lookup_pos += 1
         end
     end
+    # Base.Sort.searchsortedfirst
     # @show lookup
     () -> begin
         ind = abs(rand(Int64)) % total + 1
@@ -483,7 +552,7 @@ end
 # end
 
 get_context_processor2(c::SGCorpus) =
-    (tokens, n_tok, pos, lr) -> _process_context(zeros(Float32, c.params.n_dims), c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, n_tok, pos)
+    (tokens, n_tok, pos, lr) -> _process_context(c, zeros(Float32, c.params.n_dims), zeros(Float32, c.params.n_dims), c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, n_tok, pos)
 
 
 compute_lapse(start, ind) = begin
@@ -497,7 +566,7 @@ compute_lapse(start, ind) = begin
     passed_seconds, time_left
 end
 
-_apply_g!(atomic, par, grad, n_dims) = begin
+_apply_g!(atomic, par, grad, n_dims, alpha) = begin
     n = length(atomic)
 
     i = 1
@@ -505,7 +574,7 @@ _apply_g!(atomic, par, grad, n_dims) = begin
         if atomic[i] == false; i += 1; continue; end
         d = 1
         while d <= n_dims
-            par[d, i] -= grad[d, i]
+            par[d, i] -= grad[d, i] * alpha
             grad[d, i] = 0.
             d += 1
         end
@@ -515,13 +584,13 @@ _apply_g!(atomic, par, grad, n_dims) = begin
 end
 
 
-apply_grads(c) = begin
+apply_grads(c, alpha) = begin
     _apply_g!(c.shared_grads.atomic_in, c.shared_params.in,
-                c.shared_grads.in, c.params.n_dims)
+                c.shared_grads.in, c.params.n_dims, alpha)
     _apply_g!(c.shared_grads.atomic_out, c.shared_params.out,
-                c.shared_grads.out, c.params.n_dims)
+                c.shared_grads.out, c.params.n_dims, alpha)
     _apply_g!(c.shared_grads.atomic_buckets, c.shared_params.buckets,
-                c.shared_grads.buckets, c.params.n_dims)
+                c.shared_grads.buckets, c.params.n_dims, alpha)
     # c.shared_params.in .+= c.shared_grads.in
     # c.shared_params.out .+= c.shared_grads.out
     # c.shared_params.buckets .+= c.shared_grads.buckets
@@ -535,51 +604,51 @@ apply_grads(c) = begin
     # c.shared_grads.atomic_buckets .= false
 end
 
-update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, p_infty, n_dims) = begin
+update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, alpha, p_infty, n_dims) = begin
     # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
     d = 1
     while d <= n_dims
         f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * grad[d, i]
-        # s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * grad[d, i] ^ 2
+        s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * grad[d, i] ^ 2
         f_m_corr = 1 / (1 - beta1 ^ iter[i]); c_f_m = f_m[d, i] * f_m_corr
-        # p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
-        # if p > 4.
-        #     r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
-        #     s_m_corr = 1 / (1 - beta2 ^ iter[i]); c_s_m = sqrt(s_m[d, i] * s_m_corr)
-        #     par[d, i] -= r * c_f_m / (c_s_m + 1e-8)
-        # else
-            par[d, i] -= c_f_m
-        # end
+        p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
+        if p > 4.
+            r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
+            s_m_corr = 1 / (1 - beta2 ^ iter[i]); c_s_m = sqrt(s_m[d, i] * s_m_corr)
+            par[d, i] -= r * alpha * c_f_m / (c_s_m + 1e-8)
+        else
+            par[d, i] -= c_f_m * alpha
+        end
         grad[d, i] = 0.
         d += 1
     end
     iter[i] += 1
 end
 
-_apply_g_radam!(atomic, par, grad, n_dims, f_m, s_m, iter, beta1, beta2, p_infty) = begin
+_apply_g_radam!(atomic, par, grad, n_dims, f_m, s_m, iter, beta1, beta2, alpha, p_infty) = begin
     n = length(atomic)
     # p_infty = 2 / (1 - beta2) - 1
     i = 1
     while i <= n
         if atomic[i] == false; i += 1; continue; end
 
-        update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, p_infty, n_dims)
+        update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, alpha, p_infty, n_dims)
 
         atomic[i] = false
         i += 1
     end
 end
 
-apply_grads_radam(c) = begin
+apply_grads_radam(c, alpha) = begin
     beta1 = 0.9
     beta2 = 0.999
     p_infty = 2 / (1 - beta2) - 1
     _apply_g_radam!(c.shared_grads.atomic_in, c.shared_params.in,
-                c.shared_grads.in, c.params.n_dims, c.shared_moments.in_f_m, c.shared_moments.in_s_m, c.shared_moments.in_iter, beta1, beta2, p_infty)
+                c.shared_grads.in, c.params.n_dims, c.shared_moments.in_f_m, c.shared_moments.in_s_m, c.shared_moments.in_iter, beta1, beta2, alpha, p_infty)
     _apply_g_radam!(c.shared_grads.atomic_out, c.shared_params.out,
-                c.shared_grads.out, c.params.n_dims, c.shared_moments.out_f_m, c.shared_moments.out_s_m, c.shared_moments.out_iter, beta1, beta2, p_infty)
+                c.shared_grads.out, c.params.n_dims, c.shared_moments.out_f_m, c.shared_moments.out_s_m, c.shared_moments.out_iter, beta1, beta2, alpha, p_infty)
     _apply_g_radam!(c.shared_grads.atomic_buckets, c.shared_params.buckets,
-                c.shared_grads.buckets, c.params.n_dims, c.shared_moments.bucket_f_m, c.shared_moments.bucket_s_m, c.shared_moments.bucket_iter, beta1, beta2, p_infty)
+                c.shared_grads.buckets, c.params.n_dims, c.shared_moments.bucket_f_m, c.shared_moments.bucket_s_m, c.shared_moments.bucket_iter, beta1, beta2, alpha, p_infty)
 end
 
 
@@ -643,7 +712,11 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
     neg_sampler = init_negative_sampling(vocab)
     in_voc = (w) -> w in keys(vocab.vocab)
-    discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w]))
+    # discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w]))
+    discard_token = (w) -> begin
+        vd = vocab.counts[w] / vocab.totalWords / subsampling_parameter
+        !((sqrt(vd) + 1) / vd > rand())
+    end
 
 
     funct = sg_tools(compute_in!, activation, in_grad_u!, b_grad_u!, #out_grad_u!,
@@ -680,6 +753,7 @@ end
         @time for (ind, line) in enumerate(eachline(c.file))
             n_tokens = get_tokens!(c, line, token_buffer)
 
+            # dummy_lr::Float32 = 1.0
             if n_tokens > 1
                 l, t = process_tokens(c_proc, token_buffer, n_tokens, learning_rate)
                 loss += l; total_processed += t
@@ -693,8 +767,8 @@ end
             end
 
             if total_processed > c.params.batch_size
-                apply_grads(c)
-                # apply_grads_radam(c)
+                # apply_grads(c, learning_rate/total_processed)
+                # apply_grads_radam(c, learning_rate/total_processed)
                 # check_weights(c)
                 total_processed = 0
                 loss = 0.

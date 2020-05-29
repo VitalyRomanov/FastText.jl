@@ -28,7 +28,7 @@ module Vocabulary
 
     UNK_TOKEN = "UNK"
 
-    prune(v::Vocab, size::Integer) = begin
+    prune(v::Vocab, size::Integer, min_count::Integer) = begin
         sorted_words = sort(collect(v.counts), by=x->x[2], rev=true)
         sorted_words = sorted_words[1:min(length(sorted_words), size)]
 
@@ -36,9 +36,11 @@ module Vocabulary
         counts = Dict{AbstractString, Int64}()
         totalWords = 0
         for (word, count) in sorted_words
-            vocab[word] = length(vocab) + 1
-            counts[word] = count
-            totalWords += count
+            if count >= min_count
+                vocab[word] = length(vocab) + 1
+                counts[word] = count
+                totalWords += count
+            end
         end
 
         # vocab[UNK_TOKEN] = length(vocab) + 1

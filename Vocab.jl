@@ -10,16 +10,18 @@ module Vocabulary
 
     Vocab() = Vocab(Dict{AbstractString, Int64}(), Dict{AbstractString, Int64}(), 0::Integer)
 
-    learnVocab!(v::Vocab, tokens) = begin
+    learnVocab!(v::Vocab, tokens; add_new = true) = begin
         for token in tokens
-            addWord!(v, token)
+            addWord!(v, token, add_new = add_new)
         end
     end
 
-    addWord!(v::Vocab, word) = begin
+    addWord!(v::Vocab, word; add_new = true) = begin
         if !(word in keys(v.vocab))
-            v.vocab[word] = length(v.vocab) + 1
-            v.counts[word] = 1
+            if add_new
+                v.vocab[word] = length(v.vocab) + 1
+                v.counts[word] = 1
+            end
         else
             v.counts[word] += 1
         end

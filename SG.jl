@@ -22,6 +22,8 @@ struct SGParams
     subsampling_parameter::Float32
     learning_rate::Float32
     batch_size::Int32
+    max_sent_len::Int32
+    max_subwords::Int32 # used only for training
 end
 
 Base.show(io::IO, params::SGParams) = begin
@@ -186,9 +188,9 @@ get_tokens!(c, line, token_buffer) = begin
         w_id_final = -1
         if c.funct.in_voc(w)
             w_id = c.vocab.vocab[w]
-            if !(w_id in keys(c.wPieces))
-                c.wPieces[w_id] = c.funct.get_buckets(w)
-            end
+            # if !(w_id in keys(c.wPieces))
+            #     c.wPieces[w_id] = c.funct.get_buckets(w)
+            # end
             if c.funct.discard(w)
                 continue
             end
@@ -311,7 +313,7 @@ _activation(buffer, out, out_id, n_dims) = begin
     a::Float32 = 0.
     i = 1
     while i <= n_dims
-        a += buffer[i] .* out[i, out_id]
+        @inbounds a += buffer[i] .* out[i, out_id]
         i += 1
     end
     sigm(a)
@@ -322,18 +324,19 @@ end
 combine `in` representation and representations of `buckets` and
 store the result into `buffer`
 """
-_compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
-    n_bs = length(b_ids)
+# _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
+_compute_in!(buffer, in_, b_, in_id, wPieces, n_dims) = begin
+    n_bs = wPieces[1, in_id] # length(b_ids)
     factor = 1. ./ (1. + n_bs)
     i = 1
     while i <= n_dims
-        buffer[i] = in_[i, in_id]
+        @inbounds buffer[i] = in_[i, in_id]
         b_i = 1
         while b_i <= n_bs
-            buffer[i] += b_[i, b_ids[b_i]]
+            @inbounds buffer[i] += b_[i, wPieces[b_i + 1, in_id]] #b_[i, b_ids[b_i]]
             b_i += 1
         end
-        buffer[i] *= factor
+        @inbounds buffer[i] *= factor
         i += 1
     end
 
@@ -346,23 +349,26 @@ _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
     # buffer .= @views (in_[:, in_id] .+ sum(b_[:, b_ids], dims=2)[:]) .* factor
 end
 
-apply(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1}, w::Float32, n_dims::Int32) = begin
+apply_grad(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
+            w::Float32, n_dims::Int32) = begin
     d = 1
     while d <= n_dims
-        params[d, id] -= update[d] * w
+        @inbounds params[d, id] -= update[d] * w
         d += 1
     end
 end
 
-update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1}, w::Float32, n_dims::Int32) = begin
+update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
+            w::Float32, n_dims::Int32) = begin
     d = 1
     while d <= n_dims
-        update[d] += params[d, id] * w
+        @inbounds update[d] += params[d, id] * w
         d += 1
     end
 end
 
-_process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens, n_tok, pos) = begin
+_process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
+                    lr, n_neg, tokens, n_tok, pos, n_dims) = begin
     # init
     loss = 0.
     processed = 0
@@ -370,11 +376,12 @@ _process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens,
     in_id = tokens[pos]
     if in_id == -1; return loss, processed; end
 
-    buckets = wPieces[in_id]
+    n_buckets = wPieces[1, in_id] #length(buckets)
+    # buckets = wPieces[in_id]
 
     # prepare to iterate buckets
-    bucket_ind = 1
-    n_buckets = length(buckets)
+    # bucket_ind = 1
+
 
     # consts
     POS_LBL::Float32 = 1; NEG_LBL::Float32 = 0.
@@ -382,7 +389,8 @@ _process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens,
     # define window region
     win_pos = max(1, pos-win_size); win_pos_end = min(n_tok, pos+win_size)
 
-    f.compute_in!(buffer, in_id, buckets)
+    # f.compute_in!(buffer, in_id, buckets)
+    f.compute_in!(buffer, in_id)
 
     # init
     act = 0.
@@ -392,7 +400,7 @@ _process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens,
 
 
     while win_pos <= win_pos_end
-        out_id = tokens[win_pos]
+        @inbounds out_id = tokens[win_pos]
         if win_pos == pos || out_id == -1; win_pos += 1; continue; end
 
         buffer_out .= 0
@@ -408,35 +416,32 @@ _process_context(c, buffer, buffer_out, f, wPieces, win_size, lr, n_neg, tokens,
             end
 
             act = f.activation(buffer, out_id)
-            if lbl == POS_LBL
-                if act > 0.99; processed += 1; neg_ind += 1; continue; end
-                if act < 0.01; processed += 1; loss += 5.; neg_ind += 1; continue; end
-            else
-                if act > 0.99; processed += 1; loss += 5.; neg_ind += 1; continue; end
-                if act < 0.01; processed += 1; neg_ind += 1; continue; end
-            end
-            loss += - log(if lbl == POS_LBL; act; else; 1 - act; end)
+
+            lbl_act = if lbl == POS_LBL; act; else; 1 - act; end
+            if lbl_act > 0.99; processed += 1; neg_ind += 1; continue; end
+            if lbl_act < 0.01; processed += 1; loss += 5.; neg_ind += 1; continue; end
+            loss += - log(lbl_act)
             processed += 1
 
             g = (act - lbl) * lr
 
-            update_buf(c.shared_params.out, out_id, buffer_out, g, c.params.n_dims)
+            update_buf(out_, out_id, buffer_out, g, n_dims)
             # buffer_out .+= @views c.shared_params.out[:, out_id] .* g
 
-            apply(c.shared_params.out, out_id, buffer, g, c.params.n_dims)
+            apply_grad(out_, out_id, buffer, g, n_dims)
             neg_ind += 1
         end
 
-        apply(c.shared_params.in, in_id, buffer_out, lr_factor, c.params.n_dims)
+        apply_grad(in_, in_id, buffer_out, lr_factor, n_dims)
         bucket_ind = 1
         while bucket_ind <= n_buckets
-            b_id = buckets[bucket_ind]
-            apply(c.shared_params.buckets, b_id, buffer_out, lr_factor, c.params.n_dims)
+            @inbounds b_id = wPieces[bucket_ind + 1, in_id]
+            # b_id = buckets[bucket_ind]
+            apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims)
             bucket_ind += 1
         end
         win_pos += 1
     end
-
 
     # while win_pos <= win_pos_end
     #     out_id = tokens[win_pos]
@@ -522,7 +527,7 @@ init_negative_sampling(v) = begin
     # @show lookup
     () -> begin
         ind = abs(rand(Int64)) % total + 1
-        lookup[ind]
+        @inbounds lookup[ind]
     end
 end
 
@@ -552,7 +557,11 @@ end
 # end
 
 get_context_processor2(c::SGCorpus) =
-    (tokens, n_tok, pos, lr) -> _process_context(c, zeros(Float32, c.params.n_dims), zeros(Float32, c.params.n_dims), c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context, tokens, n_tok, pos)
+    (tokens, n_tok, pos, lr) -> _process_context(
+            c.shared_params.in, c.shared_params.out, c.shared_params.buckets,
+            zeros(Float32, c.params.n_dims), zeros(Float32, c.params.n_dims),
+            c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context,
+            tokens, n_tok, pos, c.params.n_dims)
 
 
 compute_lapse(start, ind) = begin
@@ -604,53 +613,6 @@ apply_grads(c, alpha) = begin
     # c.shared_grads.atomic_buckets .= false
 end
 
-update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, alpha, p_infty, n_dims) = begin
-    # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
-    d = 1
-    while d <= n_dims
-        f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * grad[d, i]
-        s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * grad[d, i] ^ 2
-        f_m_corr = 1 / (1 - beta1 ^ iter[i]); c_f_m = f_m[d, i] * f_m_corr
-        p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
-        if p > 4.
-            r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
-            s_m_corr = 1 / (1 - beta2 ^ iter[i]); c_s_m = sqrt(s_m[d, i] * s_m_corr)
-            par[d, i] -= r * alpha * c_f_m / (c_s_m + 1e-8)
-        else
-            par[d, i] -= c_f_m * alpha
-        end
-        grad[d, i] = 0.
-        d += 1
-    end
-    iter[i] += 1
-end
-
-_apply_g_radam!(atomic, par, grad, n_dims, f_m, s_m, iter, beta1, beta2, alpha, p_infty) = begin
-    n = length(atomic)
-    # p_infty = 2 / (1 - beta2) - 1
-    i = 1
-    while i <= n
-        if atomic[i] == false; i += 1; continue; end
-
-        update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, alpha, p_infty, n_dims)
-
-        atomic[i] = false
-        i += 1
-    end
-end
-
-apply_grads_radam(c, alpha) = begin
-    beta1 = 0.9
-    beta2 = 0.999
-    p_infty = 2 / (1 - beta2) - 1
-    _apply_g_radam!(c.shared_grads.atomic_in, c.shared_params.in,
-                c.shared_grads.in, c.params.n_dims, c.shared_moments.in_f_m, c.shared_moments.in_s_m, c.shared_moments.in_iter, beta1, beta2, alpha, p_infty)
-    _apply_g_radam!(c.shared_grads.atomic_out, c.shared_params.out,
-                c.shared_grads.out, c.params.n_dims, c.shared_moments.out_f_m, c.shared_moments.out_s_m, c.shared_moments.out_iter, beta1, beta2, alpha, p_infty)
-    _apply_g_radam!(c.shared_grads.atomic_buckets, c.shared_params.buckets,
-                c.shared_grads.buckets, c.params.n_dims, c.shared_moments.bucket_f_m, c.shared_moments.bucket_s_m, c.shared_moments.bucket_iter, beta1, beta2, alpha, p_infty)
-end
-
 
 check_weights(c) = begin
     act = sum(c.shared_params.in)
@@ -685,13 +647,20 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     in_g_f = shared_grads.atomic_in
     out_g_f = shared_grads.atomic_out
     b_g_f = shared_grads.atomic_buckets
+    MAX_SENT_LEN = 10000
+    MAX_SUBWORDS = 200
 
     params = SGParams(n_dims, n_buckets, length(vocab), win_size,
         min_ngram, max_ngram, neg_samples_per_context, subsampling_parameter,
-        learning_rate, batch_size)
+        learning_rate, batch_size, MAX_SENT_LEN, MAX_SUBWORDS)
 
-    compute_in! = (buffer, in_id, bucket_ids) -> _compute_in!(buffer,
-            in_, b_, in_id, bucket_ids, n_dims)
+    wPieces = SharedArray{Int64}(MAX_SUBWORDS+1, length(vocab)) # first item stores count
+    populate_subwords!(vocab, wPieces, min_ngram, max_ngram, n_buckets)
+
+    # compute_in! = (buffer, in_id, bucket_ids) -> _compute_in!(buffer,
+    #         in_, b_, in_id, bucket_ids, n_dims)
+    compute_in! = (buffer, in_id) -> _compute_in!(buffer,
+            in_, b_, in_id, wPieces, n_dims)
     activation = (buffer, out_id) -> _activation(buffer, out_, out_id, n_dims)
     # in_grad_u! = (in_id, out_id, label, lr, lr_factor, act) ->
     #     _update_grads_in!(in_g_f, in_g, out_,
@@ -722,9 +691,26 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     funct = sg_tools(compute_in!, activation, in_grad_u!, b_grad_u!, #out_grad_u!,
                 w2id, get_buckets, neg_sampler, in_voc, discard_token)
 
-    wPieces = Dict{Int64, Array{Int64,1}}()
+    # wPieces = Dict{Int64, Array{Int64,1}}()
 
     SGCorpus(file, vocab, params, shared_params, shared_grads, shared_moments, funct, wPieces)
+end
+
+
+populate_subwords!(vocab, wPieces, min_ngram, max_ngram, n_buckets) = begin
+    max_subwords = size(wPieces)[1] - 1 # first item stores count
+    # init
+    wPieces .= -1
+    for (w, id) in collect(v.vocab)
+        buckets = get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
+
+        wPieces[1, id] = min(length(buckets), max_subwords)
+
+        for (ind, b) in enumerate(buckets)
+            if ind > max_subwords; break; end
+            wPieces[ind + 1, id] = b
+        end
+    end
 end
 
 

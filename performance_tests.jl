@@ -49,7 +49,7 @@ test_negative_sampling() = begin
     tokens = tokenize(read("wiki_00", String))
     # tokens = ["b","b","b","b","c","c","c","d","d","e", "a","a","a","a","a"]
     learnVocab!(v, tokens)
-    prune(v, 5)
+    prune(v, 5, 1)
 
     do_test() = begin
 
@@ -87,3 +87,25 @@ test_apply_g() = begin
     end
 end
 @time test_apply_g()
+
+test_negative_sampling_bisect() = begin
+    v = Vocab()
+    tokens = tokenize(read("wiki_00", String))
+    learnVocab!(v, tokens)
+    prune(v, 5, 1)
+
+    do_test() = begin
+
+        smpl_neg = init_negative_sampling_bisect(v)
+
+        n_iter = 1000000
+
+        i = 1
+        while i <= n_iter
+            smpl_neg()
+            i += 1
+        end
+    end
+    @time do_test()
+end
+test_negative_sampling_bisect()

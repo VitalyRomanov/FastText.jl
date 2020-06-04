@@ -194,9 +194,10 @@ test_ns() = begin
     # tokens = ["b","b","b","b","c","c","c","d","d","e", "a","a","a","a","a"]
     tokens = tokenize(read("wiki_00", String))
     learnVocab!(v, tokens)
-    prune(v, length(v))
+    prune(v, length(v), 1)
 
-    smpl_neg = init_negative_sampling(v)
+    # smpl_neg = init_negative_sampling(v)
+    smpl_neg = init_negative_sampling_bisect(v)
     # @show sizeof(smpl_neg)
 
     n_experiments = v.totalWords * 20
@@ -231,3 +232,27 @@ test_ns() = begin
     # @show probs[ind], abs(probs[ind] - bins[ind]) / probs[ind]
 end
 test_ns()
+
+"""
+test bisect_left
+"""
+test_bisect_left() = begin
+    arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15]
+
+    @test bisect_left(arr, 1, 1, length(arr)) == 1
+    @test bisect_left(arr, 2, 1, length(arr)) == 2
+    @test bisect_left(arr, 3, 1, length(arr)) == 3
+    @test bisect_left(arr, 4, 1, length(arr)) == 4
+    @test bisect_left(arr, 5, 1, length(arr)) == 5
+    @test bisect_left(arr, 6, 1, length(arr)) == 6
+    @test bisect_left(arr, 7, 1, length(arr)) == 7
+    @test bisect_left(arr, 8, 1, length(arr)) == 8
+    @test bisect_left(arr, 9, 1, length(arr)) == 9
+    @test bisect_left(arr, 10, 1, length(arr)) == 10
+    @test bisect_left(arr, 11, 1, length(arr)) == 11
+    @test bisect_left(arr, 12, 1, length(arr)) == 11
+    @test bisect_left(arr, 13, 1, length(arr)) == 11
+    @test bisect_left(arr, 15, 1, length(arr)) == 11
+    @test bisect_left(arr, 15, 1, length(arr)) == 11
+end
+test_bisect_left()

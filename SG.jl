@@ -493,6 +493,50 @@ end
 
 sigm(x) = (1 ./ (1 + exp.(-x)))
 
+bisect_left(arr, val, start_, end_) = begin
+    if start_ == end_
+        return start_
+    end
+    # fast check
+    # if val < arr[1]
+    #     return 0
+    # end
+
+    middle = (end_ - start_) ÷ 2 + start_
+    # println(start_, " ", end_, " ", middle)
+    if val <= arr[middle]
+        return bisect_left(arr, val, start_, middle)
+    else
+        return bisect_left(arr, val, middle + 1, end_)
+    end
+end
+
+init_negative_sampling_bisect(v) = begin
+    ordered_words = sort(collect(v.vocab), by=x->x[2])
+    probs = zeros(length(ordered_words))
+    reverseMap = Dict()
+    for (w, id) in ordered_words
+        probs[id] = v.counts[w]
+        reverseMap[id] = w
+    end
+    probs .^= 3/4
+    probs ./= sum(probs)
+
+    cumul = zeros(Int64, length(probs))
+    acc = 0
+    for i in 1:length(probs)
+        acc += convert(Int64, floor(probs[i] * 2^32))
+        cumul[i] = acc
+    end
+    total = cumul[end]
+    n_words = length(cumul)
+
+    () -> begin
+        ind = abs(rand(Int64)) % total + 1
+        bisect_left(cumul, ind, 1, n_words)
+    end
+end
+
 init_negative_sampling(v) = begin
     ordered_words = sort(collect(v.vocab), by=x->x[2])
     probs = zeros(length(ordered_words))
@@ -679,7 +723,8 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
                         b_id, out_id, label, lr, lr_factor, n_dims, act)
     w2id = (w) -> get(vocab.vocab, w, -1)
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
-    neg_sampler = init_negative_sampling(vocab)
+    # neg_sampler = init_negative_sampling(vocab)
+    neg_sampler = init_negative_sampling_bisect(vocab)
     in_voc = (w) -> w in keys(vocab.vocab)
     # discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w]))
     discard_token = (w) -> begin

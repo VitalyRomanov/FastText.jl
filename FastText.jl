@@ -64,9 +64,10 @@ Base.getindex(m::FastText, word::SubString) = Base.getindex(m, String(word))
 
 get_vid(m::FastText, word) = m.vocab.vocab[word]
 get_bucket_ids(m::FastText, word) = begin
-    pieces = in_pieces(word, m.min_ngram, m.max_ngram)
-    bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
-    bucket_idx
+    # pieces = in_pieces(word, m.min_ngram, m.max_ngram)
+    # # bucket_idx = hash_piece.(pieces, size(m.bucket)[2])
+    # bucket_idx = fb_hash.(pieces, size(m.bucket)[2])
+    bucket_idx = get_bucket_ids(word, m.min_ngram, m.max_ngram, size(m.bucket)[2])
 end
 
 get_bucket_ids(word, min_ngram, max_ngram, max_bucket) = begin
@@ -74,7 +75,8 @@ get_bucket_ids(word, min_ngram, max_ngram, max_bucket) = begin
         return []
     end
     pieces = in_pieces(word, min_ngram, max_ngram)
-    bucket_idx = hash_piece.(pieces, max_bucket)
+    # bucket_idx = hash_piece.(pieces, max_bucket)
+    bucket_idx = fb_hash.(pieces, max_bucket)
     bucket_idx
 end
 
@@ -95,6 +97,24 @@ in_pieces(word, min_ngram::Integer, max_ngram::Integer) = begin
 end
 
 hash_piece(x, max_bucket)::Int64 = hash(x) % max_bucket + 1
+
+fb_hash(x, max_bucket) = begin
+    # copy Gensim implementation
+    # https://github.com/RaRe-Technologies/gensim/blob/411f5466326c6a44dcc80d2ac241f7a0c1bfeee5/gensim/models/_utils_any2vec.pyx#L22
+    h::UInt32 = 2166136261
+    f::UInt32 = 16777619
+
+    n_bytes = sizeof(x)
+
+    i = 1
+    while i<=n_bytes
+        h = xor(h, codeunit(x, i))
+        h = h * f
+        i += 1
+    end
+
+    return convert(Int64, h) % max_bucket + 1
+end
 
 # Flux.@functor FastText
 

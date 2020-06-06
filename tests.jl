@@ -256,3 +256,11 @@ test_bisect_left() = begin
     @test bisect_left(arr, 15, 1, length(arr)) == 11
 end
 test_bisect_left()
+
+
+"""
+test Facebook compatible hash
+"""
+@test fb_hash("a") == 3826002220
+@test fb_hash("ф") == 1170258024
+@test fb_hash("<a") == 1761008750

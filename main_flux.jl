@@ -10,41 +10,6 @@ using Flux
 
 Flux.@functor FastText
 
-# FILENAME = "wiki_01"
-FILENAME = "/Users/LTV/Desktop/AA_t.txt"
-FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
-corpus_file = open(FILENAME)
-
-v = Vocab()
-
-print("Learning vocabulary...")
-for line in eachline(corpus_file)
-    tokens = tokenize(line)
-    learnVocab!(v, tokens)
-end
-v = prune(v, 5000)
-println("done")
-
-c = SGCorpus(corpus_file, v)
-
-const ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
-
-loss(x,y) = begin
-    (id_in, buckets, id_out) = x
-    # id_in = x[1]
-    # id_out = x[end]
-    # buckets = x[2:end-1]
-    emb_in = ft.in[:, id_in]
-    emb_buckets = ft.bucket[:, buckets]
-    emb_out = ft.out[:, id_out]
-
-    e_in = emb_in + sum(emb_buckets, dims=2)[:]
-
-    Flux.logitbinarycrossentropy(e_in' * emb_out, y)
-end
-opt = Descent(0.01)
-
-
 place_sample_on_channel!(channel,
                         # shared_in,
                         # shared_out,
@@ -91,7 +56,7 @@ end
 
 # seekstart(c.file)
 
-train(ft::FastText, c::SGCorpus) = begin
+train(ft::FastText, c::SGCorpus, loss, opt) = begin
     println("Begin training...")
     batch_size = 128
     processed = 0
@@ -109,7 +74,46 @@ train(ft::FastText, c::SGCorpus) = begin
     end
 end
 
-train(ft, c)
+
+main() = begin
+    FILENAME = "wiki_00"
+    # FILENAME = "/Users/LTV/Desktop/AA_t.txt"
+    # FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
+    corpus_file = open(FILENAME)
+
+    v = Vocab()
+
+    print("Learning vocabulary...")
+    for line in eachline(corpus_file)
+        tokens = tokenize(line)
+        learnVocab!(v, tokens)
+    end
+    v = prune(v, 5000)
+    println("done")
+
+    c = SGCorpus(corpus_file, v)
+
+    ft = FastText(v, 300, bucket_size=20000, min_ngram=3, max_ngram=5)
+
+    loss(x,y) = begin
+        (id_in, buckets, id_out) = x
+        # id_in = x[1]
+        # id_out = x[end]
+        # buckets = x[2:end-1]
+        emb_in = ft.in[:, id_in]
+        emb_buckets = ft.bucket[:, buckets]
+        emb_out = ft.out[:, id_out]
+
+        e_in = emb_in + sum(emb_buckets, dims=2)[:]
+
+        Flux.logitbinarycrossentropy(e_in' * emb_out, y)
+    end
+    opt = Descent(0.01)
+
+    train(ft, c, loss, opt)
+end
+
+main()
 
 
 

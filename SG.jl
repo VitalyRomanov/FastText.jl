@@ -326,6 +326,7 @@ store the result into `buffer`
 """
 # _compute_in!(buffer, in_, b_, in_id, b_ids, n_dims) = begin
 _compute_in!(buffer, in_, b_, in_id, wPieces, n_dims) = begin
+    # https://julialang.org/blog/2019/07/multithreading/
     n_bs = wPieces[1, in_id] # length(b_ids)
     factor = 1. ./ (1. + n_bs)
     i = 1

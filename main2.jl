@@ -13,7 +13,7 @@ includet("SG.jl")
 # FILENAME = "wiki_00"
 EPOCHS = 1
 # FILENAME = "test.txt"
-# FILENAME = "/Users/LTV/Desktop/AA_J.txt"
+# FILENAME = "/Users/LTV/Desktop/AA.txt"
 FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
 

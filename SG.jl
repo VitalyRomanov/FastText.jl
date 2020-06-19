@@ -232,6 +232,35 @@ end
 #     return buffer[1:buffer_pos-1]
 # end
 
+_update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, g, alpha, p_infty, n_dims) = begin
+    # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
+    d = 1
+
+    f_m_corr = 1 / (1 - beta1 ^ iter[i]);
+    p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
+    s_m_corr = 1 / (1 - beta2 ^ iter[i]);
+    r = 1.
+    if p > 4.
+        r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
+    end
+
+    while d <= n_dims
+        s_grad = grad[d] * g
+        f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * s_grad
+        s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * s_grad ^ 2
+        c_f_m = @. f_m[d, i] * f_m_corr
+
+        if p > 4.
+            c_s_m = @. sqrt(s_m[d, i] * s_m_corr)
+            par[d, i] -= @. r * alpha * c_f_m / (c_s_m + 1e-8)
+        else
+            par[d, i] -= @. c_f_m * alpha
+        end
+        d += 1
+    end
+    iter[i] += 1
+end
+
 _update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
                 in::SharedArray{Float32,2}, out::SharedArray{Float32,2},
@@ -368,7 +397,7 @@ update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
     end
 end
 
-_process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
+_process_context(in_, out_, buckets_, moments_, buffer, buffer_out, f, wPieces, win_size,
                     lr, n_neg, tokens, n_tok, pos, n_dims) = begin
     # init
     loss = 0.
@@ -424,21 +453,24 @@ _process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
             loss += - log(lbl_act)
             processed += 1
 
-            g = (act - lbl) * lr
+            g = (act - lbl) #* lr # disabled for Radam
 
             update_buf(out_, out_id, buffer_out, g, n_dims)
-            # buffer_out .+= @views c.shared_params.out[:, out_id] .* g
+            ## buffer_out .+= @views c.shared_params.out[:, out_id] .* g
 
-            apply_grad(out_, out_id, buffer, g, n_dims)
+            # apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
+            _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
             neg_ind += 1
         end
 
-        apply_grad(in_, in_id, buffer_out, lr_factor, n_dims)
+        # apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+        _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
         bucket_ind = 1
         while bucket_ind <= n_buckets
             @inbounds b_id = wPieces[bucket_ind + 1, in_id]
-            # b_id = buckets[bucket_ind]
-            apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims)
+            ## b_id = buckets[bucket_ind]
+            # apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+            _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
             bucket_ind += 1
         end
         win_pos += 1
@@ -604,6 +636,7 @@ end
 get_context_processor2(c::SGCorpus) =
     (tokens, n_tok, pos, lr) -> _process_context(
             c.shared_params.in, c.shared_params.out, c.shared_params.buckets,
+            c.shared_moments,
             zeros(Float32, c.params.n_dims), zeros(Float32, c.params.n_dims),
             c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context,
             tokens, n_tok, pos, c.params.n_dims)

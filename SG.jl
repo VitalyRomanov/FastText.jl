@@ -453,24 +453,24 @@ _process_context(in_, out_, buckets_, moments_, buffer, buffer_out, f, wPieces, 
             loss += - log(lbl_act)
             processed += 1
 
-            g = (act - lbl) #* lr # disabled for Radam
+            g = (act - lbl) * lr # disabled for Radam
 
             update_buf(out_, out_id, buffer_out, g, n_dims)
             ## buffer_out .+= @views c.shared_params.out[:, out_id] .* g
 
-            # apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
-            _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
+            # _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
             neg_ind += 1
         end
 
-        # apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-        _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+        apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+        # _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
         bucket_ind = 1
         while bucket_ind <= n_buckets
             @inbounds b_id = wPieces[bucket_ind + 1, in_id]
             ## b_id = buckets[bucket_ind]
-            # apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-            _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+            # _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
             bucket_ind += 1
         end
         win_pos += 1

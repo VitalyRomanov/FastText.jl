@@ -280,7 +280,8 @@ init_negative_sampling_bisect(v) = begin
     end
 end
 
-get_scheduler(c; increase_factor=10.) = begin
+get_scheduler(c; increase_factor=1.) = begin
+    # need experiments for best scheduling practices
     scheduler = nothing
     if total_lines > 20000
         scheduler = (iter) -> begin
@@ -291,8 +292,8 @@ get_scheduler(c; increase_factor=10.) = begin
     else
         scheduler = (iter) -> c.params.learning_rate
     end
-    # scheduler = (iter) -> c.params.learning_rate
-    # scheduler
+    scheduler = (iter) -> c.params.learning_rate
+    scheduler
 end
 
 get_context_processor(c::SGCorpus) =

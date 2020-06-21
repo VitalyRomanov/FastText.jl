@@ -8,8 +8,11 @@ using Printf
 using SharedArrays
 # using LinearAlgebra
 
-const MAX_SENT_LENGTH = 1000
+# these parameters are not really meant to be set by users
+const MAX_SENT_LEN = 10000  # used to optimize memory usage
+const MAX_SUBWORDS = 200    # used to optimize memory usage
 const TOK_RE = Regex("[\\w]+|[\\w]+[\\w-]+|[^\\w\\s]")
+
 
 struct SGParams
     n_dims::Int32
@@ -65,17 +68,14 @@ struct ft_params
     in
     out
     buckets
-    atomic_in
-    atomic_out
-    atomic_buckets
+    # atomic_in         # were meant to be used for multithreading
+    # atomic_out
+    # atomic_buckets
 end
 
 struct sg_tools
     compute_in!
     activation
-    update_grad_in!
-    update_grad_b!
-    # update_grad_out!
     w2id
     get_buckets
     sample_neg
@@ -83,104 +83,77 @@ struct sg_tools
     discard
 end
 
-init_moments(voc_size, n_dims, n_buckets) = begin
-    in_f_m = SharedArray{Float32}(n_dims, voc_size)
-    out_f_m = SharedArray{Float32}(n_dims, voc_size)
-    bucket_f_m = SharedArray{Float32}(n_dims, n_buckets)
-
-    in_f_m .= 0.
-    out_f_m .= 0.
-    bucket_f_m .= 0.
-
-    in_s_m = SharedArray{Float32}(n_dims, voc_size)
-    out_s_m = SharedArray{Float32}(n_dims, voc_size)
-    bucket_s_m = SharedArray{Float32}(n_dims, n_buckets)
-
-    in_s_m .= 0.
-    out_s_m .= 0.
-    bucket_s_m .= 0.
-
-    in_iter = SharedArray{Float32,1}(voc_size)
-    out_iter = SharedArray{Float32,1}(voc_size)
-    buckets_iter = SharedArray{Float32,1}(n_buckets)
-
-    in_iter .= 1; out_iter .= 1; buckets_iter .= 1
-
-    moments(
-        in_f_m,
-        out_f_m,
-        bucket_f_m,
-        in_s_m,
-        out_s_m,
-        bucket_s_m,
-        in_iter,
-        out_iter,
-        buckets_iter
-    )
-end
+# were meant to be used with radam
+# init_moments(voc_size, n_dims, n_buckets) = begin
+#     in_f_m = SharedArray{Float32}(n_dims, voc_size)
+#     out_f_m = SharedArray{Float32}(n_dims, voc_size)
+#     bucket_f_m = SharedArray{Float32}(n_dims, n_buckets)
+#
+#     in_f_m .= 0.; out_f_m .= 0.; bucket_f_m .= 0.
+#
+#     in_s_m = SharedArray{Float32}(n_dims, voc_size)
+#     out_s_m = SharedArray{Float32}(n_dims, voc_size)
+#     bucket_s_m = SharedArray{Float32}(n_dims, n_buckets)
+#
+#     in_s_m .= 0.; out_s_m .= 0.; bucket_s_m .= 0.
+#
+#     in_iter = SharedArray{Float32,1}(voc_size)
+#     out_iter = SharedArray{Float32,1}(voc_size)
+#     buckets_iter = SharedArray{Float32,1}(n_buckets)
+#
+#     in_iter .= 1; out_iter .= 1; buckets_iter .= 1
+#
+#     moments(in_f_m, out_f_m, bucket_f_m, in_s_m, out_s_m,
+#         bucket_s_m, in_iter, out_iter, buckets_iter)
+# end
 
 init_shared_params(voc_size, n_dims, n_buckets) = begin
     in_shared = SharedArray{Float32}(n_dims, voc_size)
     out_shared = SharedArray{Float32}(n_dims, voc_size)
     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
 
+    # adopt initialization like in gensim
     in_shared .= (rand(n_dims, voc_size) .- 0.5) / n_dims
     out_shared .= 0. #randn(n_dims, voc_size) / n_dims # init these to zero
     bucket_shared .= (rand(n_dims, n_buckets) .- 0.5) / n_dims
 
-    # in_shared .= in_shared ./ sqrt.(sum(in_shared .* in_shared, dims=1))
-    # out_shared .= out_shared ./ sqrt.(sum(out_shared .* out_shared, dims=1))
-    # bucket_shared .= bucket_shared ./ sqrt.(sum(bucket_shared .* bucket_shared, dims=1))
+    # atomic_in = SharedArray{Bool}(voc_size)
+    # atomic_out = SharedArray{Bool}(voc_size)
+    # atomic_buckets = SharedArray{Bool}(n_buckets)
+    #
+    # atomic_in .= false; atomic_out .= false; atomic_buckets .= false
 
-    atomic_in = SharedArray{Bool}(voc_size)
-    atomic_out = SharedArray{Bool}(voc_size)
-    atomic_buckets = SharedArray{Bool}(n_buckets)
-
-    atomic_in .= false; atomic_out .= false; atomic_buckets .= false
-
-    ft_params(
-        in_shared,
-        out_shared,
-        bucket_shared,
-        atomic_in,
-        atomic_out,
-        atomic_buckets
+    ft_params(in_shared, out_shared, bucket_shared,
+        # atomic_in, atomic_out, atomic_buckets
     )
 end
 
-init_shared_grads(voc_size, n_dims, n_buckets) = begin
-    in_shared = SharedArray{Float32}(n_dims, voc_size)
-    out_shared = SharedArray{Float32}(n_dims, voc_size)
-    bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
-
-    in_shared .= 0.
-    out_shared .= 0.
-    bucket_shared .= 0.
-
-    atomic_in = SharedArray{Bool}(voc_size)
-    atomic_out = SharedArray{Bool}(voc_size)
-    atomic_buckets = SharedArray{Bool}(n_buckets)
-
-    atomic_in .= false
-    atomic_out .= false
-    atomic_buckets .= false
-
-    ft_params(
-        in_shared,
-        out_shared,
-        bucket_shared,
-        atomic_in,
-        atomic_out,
-        atomic_buckets
-    )
-end
+# using separate gradients is much slower than directly updating parameters
+# init_shared_grads(voc_size, n_dims, n_buckets) = begin
+#     in_shared = SharedArray{Float32}(n_dims, voc_size)
+#     out_shared = SharedArray{Float32}(n_dims, voc_size)
+#     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
+#
+#     in_shared .= 0.; out_shared .= 0.; bucket_shared .= 0.
+#
+#     atomic_in = SharedArray{Bool}(voc_size)
+#     atomic_out = SharedArray{Bool}(voc_size)
+#     atomic_buckets = SharedArray{Bool}(n_buckets)
+#
+#     atomic_in .= false; atomic_out .= false; atomic_buckets .= false
+#
+#     ft_params(
+#         in_shared, out_shared, bucket_shared,
+#         atomic_in, atomic_out, atomic_buckets
+#     )
+# end
 
 get_tokens!(c, line, token_buffer) = begin
     # subsampling procedure
     # https://arxiv.org/pdf/1310.4546.pdf
     buffer_pos = 1
 
-    global TOK_RE, MAX_SENT_LENGTH
+    global TOK_RE, MAX_SENT_LEN
     tokens = eachmatch(TOK_RE, line)
 
     for t in tokens
@@ -188,6 +161,8 @@ get_tokens!(c, line, token_buffer) = begin
         w_id_final = -1
         if c.funct.in_voc(w)
             w_id = c.vocab.vocab[w]
+            # remains of previous implementation that used dictionary
+            # instead of preallocated array
             # if !(w_id in keys(c.wPieces))
             #     c.wPieces[w_id] = c.funct.get_buckets(w)
             # end
@@ -195,71 +170,45 @@ get_tokens!(c, line, token_buffer) = begin
                 continue
             end
             w_id_final = w_id
-            # if !c.funct.discard(w)
-            #     w_id_final = w_id
-            # end
         end
         token_buffer[buffer_pos] = w_id_final
         buffer_pos += 1
-        if buffer_pos > MAX_SENT_LENGTH; break; end
+        if buffer_pos > c.params.max_sent_len; break; end
     end
 
     nTokens = buffer_pos - 1
 end
 
-# drop_tokens(c, tokens) = begin
-#     # subsampling procedure
-#     # https://arxiv.org/pdf/1310.4546.pdf
-#     buffer = Array{SubString}(undef, length(tokens))
-#     buffer_pos = 1
+# _update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, g, alpha, p_infty, n_dims) = begin
+#     # experiments were not successfull
+#     # the performance on BATS was smaller that SGD (possibly due to a bug)
+#     # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
+#     d = 1
 #
-#     # create a dictionary that stores pieces
-#     # do not store the string tokens
-#     # store word ids in a fxed length array to avoid allocations
-#
-#     # in_voc(c::SGCorpus, w) = w in keys(c.vocab.vocab);
-#     # discard_token(c::SGCorpus, w) = rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
-#     in_voc = (w) -> w in keys(c.vocab.vocab)
-#     discard_token = (w) -> rand() < (1 - sqrt(c.vocab.totalWords * c.params.subsampling_parameter / c.vocab.counts[w]))
-#
-#     UNK_TOKEN = "UNK"
-#     for i in 1:length(tokens)
-#         if in_voc(tokens[i]) && !discard_token(tokens[i])
-#             buffer[buffer_pos] = tokens[i]
-#             buffer_pos += 1
-#         end
+#     f_m_corr = 1 / (1 - beta1 ^ iter[i]);
+#     p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
+#     s_m_corr = 1 / (1 - beta2 ^ iter[i]);
+#     r = 1.
+#     if p > 4.
+#         r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
 #     end
-#     return buffer[1:buffer_pos-1]
+#
+#     while d <= n_dims
+#         s_grad = grad[d] * g
+#         f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * s_grad
+#         s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * s_grad ^ 2
+#         c_f_m = @. f_m[d, i] * f_m_corr
+#
+#         if p > 4.
+#             c_s_m = @. sqrt(s_m[d, i] * s_m_corr)
+#             par[d, i] -= @. r * alpha * c_f_m / (c_s_m + 1e-8)
+#         else
+#             par[d, i] -= @. c_f_m * alpha
+#         end
+#         d += 1
+#     end
+#     iter[i] += 1
 # end
-
-_update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, g, alpha, p_infty, n_dims) = begin
-    # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
-    d = 1
-
-    f_m_corr = 1 / (1 - beta1 ^ iter[i]);
-    p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
-    s_m_corr = 1 / (1 - beta2 ^ iter[i]);
-    r = 1.
-    if p > 4.
-        r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
-    end
-
-    while d <= n_dims
-        s_grad = grad[d] * g
-        f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * s_grad
-        s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * s_grad ^ 2
-        c_f_m = @. f_m[d, i] * f_m_corr
-
-        if p > 4.
-            c_s_m = @. sqrt(s_m[d, i] * s_m_corr)
-            par[d, i] -= @. r * alpha * c_f_m / (c_s_m + 1e-8)
-        else
-            par[d, i] -= @. c_f_m * alpha
-        end
-        d += 1
-    end
-    iter[i] += 1
-end
 
 _update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
@@ -397,7 +346,7 @@ update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
     end
 end
 
-_process_context(in_, out_, buckets_, moments_, buffer, buffer_out, f, wPieces, win_size,
+_process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
                     lr, n_neg, tokens, n_tok, pos, n_dims) = begin
     # init
     loss = 0.
@@ -453,24 +402,24 @@ _process_context(in_, out_, buckets_, moments_, buffer, buffer_out, f, wPieces, 
             loss += - log(lbl_act)
             processed += 1
 
-            g = (act - lbl) #* lr # disabled for Radam
+            g = (act - lbl) * lr # disabled for Radam
 
             update_buf(out_, out_id, buffer_out, g, n_dims)
             ## buffer_out .+= @views c.shared_params.out[:, out_id] .* g
 
-            # apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
-            _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
+            # _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
             neg_ind += 1
         end
 
-        # apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-        _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+        apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+        # _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
         bucket_ind = 1
         while bucket_ind <= n_buckets
             @inbounds b_id = wPieces[bucket_ind + 1, in_id]
             ## b_id = buckets[bucket_ind]
-            # apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-            _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
+            # _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
             bucket_ind += 1
         end
         win_pos += 1
@@ -633,10 +582,9 @@ end
 #     (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
 # end
 
-get_context_processor2(c::SGCorpus) =
+get_context_processor(c::SGCorpus) =
     (tokens, n_tok, pos, lr) -> _process_context(
             c.shared_params.in, c.shared_params.out, c.shared_params.buckets,
-            c.shared_moments,
             zeros(Float32, c.params.n_dims), zeros(Float32, c.params.n_dims),
             c.funct, c.wPieces, c.params.win_size, lr, c.params.neg_samples_per_context,
             tokens, n_tok, pos, c.params.n_dims)
@@ -725,52 +673,33 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     in_g_f = shared_grads.atomic_in
     out_g_f = shared_grads.atomic_out
     b_g_f = shared_grads.atomic_buckets
-    MAX_SENT_LEN = 10000
-    MAX_SUBWORDS = 200
+
+    global MAX_SENT_LEN, MAX_SUBWORDS
 
     params = SGParams(n_dims, n_buckets, length(vocab), win_size,
         min_ngram, max_ngram, neg_samples_per_context, subsampling_parameter,
         learning_rate, batch_size, MAX_SENT_LEN, MAX_SUBWORDS)
 
+    # wPieces = Dict{Int64, Array{Int64,1}}() # first implementation used dictionary.
     wPieces = SharedArray{Int64}(MAX_SUBWORDS+1, length(vocab)) # first item stores count
     populate_subwords!(vocab, wPieces, min_ngram, max_ngram, n_buckets)
 
-    # compute_in! = (buffer, in_id, bucket_ids) -> _compute_in!(buffer,
-    #         in_, b_, in_id, bucket_ids, n_dims)
     compute_in! = (buffer, in_id) -> _compute_in!(buffer,
             in_, b_, in_id, wPieces, n_dims)
     activation = (buffer, out_id) -> _activation(buffer, out_, out_id, n_dims)
-    # in_grad_u! = (in_id, out_id, label, lr, lr_factor, act) ->
-    #     _update_grads_in!(in_g_f, in_g, out_,
-    #                     in_id, out_id, label, lr, lr_factor, n_dims, act)
-    # b_grad_u! = (b_id, out_id, label, lr, lr_factor, act) ->
-    #     _update_grads_in!(b_g_f, b_g, out_,
-    #                     b_id, out_id, label, lr, lr_factor, n_dims, act)
-    # out_grad_u! = (out_id, buffer, label, lr, act) ->
-    #     _update_grads_out!(out_g_f, out_g, buffer,
-    #                     out_id, label, lr, n_dims, act)
-    in_grad_u! = (in_id, out_id, label, lr, lr_factor, act) ->
-        _update_grads!(in_g_f, out_g_f, in_g, out_g, in_, out_,
-                        in_id, out_id, label, lr, lr_factor, n_dims, act)
-    b_grad_u! = (b_id, out_id, label, lr, lr_factor, act) ->
-        _update_grads!(b_g_f, out_g_f, b_g, out_g, b_, out_,
-                        b_id, out_id, label, lr, lr_factor, n_dims, act)
     w2id = (w) -> get(vocab.vocab, w, -1)
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
     # neg_sampler = init_negative_sampling(vocab)
     neg_sampler = init_negative_sampling_bisect(vocab)
     in_voc = (w) -> w in keys(vocab.vocab)
-    # discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w]))
-    discard_token = (w) -> begin
+    # discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w])) # this discarding procedure is suggested in the original word2vec paper
+    discard_token = (w) -> begin # this discarding procedure is implemented in gensim (and possibly facebook's fasttext), it is less aggressive in subsampling, more words are available for training
         vd = vocab.counts[w] / vocab.totalWords / subsampling_parameter
         !((sqrt(vd) + 1) / vd > rand())
     end
 
-
-    funct = sg_tools(compute_in!, activation, in_grad_u!, b_grad_u!, #out_grad_u!,
+    funct = sg_tools(compute_in!, activation,
                 w2id, get_buckets, neg_sampler, in_voc, discard_token)
-
-    # wPieces = Dict{Int64, Array{Int64,1}}()
 
     SGCorpus(file, vocab, params, shared_params, shared_grads, shared_moments, funct, wPieces)
 end
@@ -795,12 +724,10 @@ end
 
 (c::SGCorpus)(;total_lines=0) = begin
 
-    global MAX_SENT_LENGTH
-    token_buffer = -ones(Int64, MAX_SENT_LENGTH)
+    token_buffer = -ones(Int64, c.params.max_sent_len)
 
     scheduler = get_scheduler(c)
-    # c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
-    c_proc = get_context_processor2(c)
+    c_proc = get_context_processor(c)
 
     for epoch in 1:EPOCHS
 
@@ -810,9 +737,6 @@ end
 
         total_processed = 0
         loss = 0.
-
-        # TODO
-        # preallocate array of fixed size for tokens
 
         start = time_ns()
         @time for (ind, line) in enumerate(eachline(c.file))
@@ -828,15 +752,9 @@ end
                 passed_seconds, time_left = compute_lapse(start, ind)
                 if n_tokens > 1
                     @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.8f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 loss/total_processed learning_rate
+                    total_processed = 0
+                    loss = 0.
                 end
-            end
-
-            if total_processed > c.params.batch_size
-                # apply_grads(c, learning_rate/total_processed)
-                # apply_grads_radam(c, learning_rate/total_processed)
-                # check_weights(c)
-                total_processed = 0
-                loss = 0.
             end
         end
         println("")
@@ -853,65 +771,3 @@ end
     FastText(in_m, out_m, bucket_m, c.vocab,
         c.params.min_ngram, c.params.max_ngram)
 end
-
-# (c::SGCorpus)(;total_lines=0) = begin
-#
-#     global MAX_SENT_LENGTH
-#     token_buffer = -ones(Int64, MAX_SENT_LENGTH)
-#
-#     scheduler = get_scheduler(c)
-#     # c_proc = get_context_processor(c, sample_neg, get_buckets, w2id)
-#     c_proc = get_context_processor2(c)
-#
-#     for epoch in 1:EPOCHS
-#
-#         seekstart(c.file)
-#
-#         learning_rate = c.params.learning_rate
-#
-#         total_processed = 0
-#         loss = 0.
-#
-#         # TODO
-#         # preallocate array of fixed size for tokens
-#
-#         start = time_ns()
-#         @time for (ind, line) in enumerate(eachline(c.file))
-#             # n_tokens = get_tokens!(c, line, token_buffer)
-#             # tokens = collect(map((t) -> get(c.vocab.vocab, t, -1), tokenize(line)))
-#             # tokens = tokenize(line)
-#             # @show 1, token_buffer[1:n_tokens]
-#             # @show 2, tokens
-#             # if length(tokens) > 1
-#             #     l, t = process_tokens(c_proc, tokens, learning_rate)
-#             #     loss += l; total_processed += t
-#             # end
-#             #
-#             # if ind % 100 == 0
-#             #     passed_seconds, time_left = compute_lapse(start, ind)
-#             #     if length(tokens) > 1
-#             #         @printf "\rProcessed %d/%d lines, %dm%ds/%dm%ds, loss %.8f lr %.5f\n" ind total_lines passed_seconds÷60 passed_seconds%60 time_left÷60 time_left%60 loss/total_processed learning_rate
-#             #     end
-#             # end
-#             #
-#             # if total_processed > c.params.batch_size
-#             #     apply_grads(c)
-#             #     # check_weights(c)
-#             #     total_processed = 0
-#             #     loss = 0.
-#             # end
-#         end
-#         println("")
-#     end
-#
-#     in_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
-#     out_m = zeros(Float32, c.params.n_dims, c.params.voc_size)
-#     bucket_m = zeros(Float32, c.params.n_dims, c.params.n_buckets)
-#
-#     in_m[:] = c.shared_params.in[:]
-#     out_m[:] = c.shared_params.out[:]
-#     bucket_m[:] = c.shared_params.buckets[:]
-#
-#     FastText(in_m, out_m, bucket_m, c.vocab,
-#         c.params.min_ngram, c.params.max_ngram)
-# end

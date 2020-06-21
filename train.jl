@@ -1,11 +1,65 @@
+using ArgParse
+
 include("SG.jl")
 
 # FILENAME = "wiki_00"
-EPOCHS = 1
+# EPOCHS = 1
 # FILENAME = "test.txt"
-FILENAME = "/Users/LTV/Desktop/AA.txt"
+# FILENAME = "/Users/LTV/Desktop/AA.txt"
 # FILENAME = "/home/ltv/data/local_run/wikipedia/extracted/en_wiki_plain/AA_J.txt"
 # FILENAME = "/Volumes/External/datasets/Language/Corpus/en/en_wiki_tiny/wiki_tiny.txt"
+
+
+s = ArgParseSettings()
+@add_arg_table s begin
+    "--epochs", "-e"
+        help = ""
+        arg_type = Int
+        default = 1
+    "--min_n"
+        help = ""
+        arg_type = Int
+        default = 3
+    "--max_n"
+        help = ""
+        arg_type = Int
+        default = 5
+    "--buckets", "-b"
+        help = ""
+        arg_type = Int
+        default = 200000
+    "--alpha"
+        help = ""
+        arg_type = Float64
+        default = 1e-2
+    "--neg", "-n"
+        help = ""
+        arg_type = Int
+        default = 5
+    "--voc", "-v"
+        help = ""
+        arg_type = Int
+        default = 200000
+    "--min_voc"
+        help = ""
+        arg_type = Int
+        default = 5
+    # "--opt2", "-o"
+    #     help = "another option with an argument"
+    #     arg_type = Int
+    #     default = 0
+    # "--flag1"
+    #     help = "an option without argument, i.e. a flag"
+    #     action = :store_true
+    "input"
+        help = "a positional argument"
+        required = true
+end
+args = parse_args(s)
+println(args)
+
+FILENAME = args["input"]
+EPOCHS = args["epochs"]
 
 # TODO
 # implement PMI based word Ngram extraction
@@ -46,16 +100,18 @@ learn_voc(file, voc_size) = begin
     end
     println("done")
 
-    v = prune(v, voc_size, 5)
+    v = prune(v, voc_size, args["min_voc"])
     v, total_lines
 end
 
 corpus_file = open(FILENAME)
 
-v, total_lines = learn_voc(corpus_file, 50000)
+v, total_lines = learn_voc(corpus_file, args["voc"])
 
 println("Begin training")
-c = SGCorpus(corpus_file, v, learning_rate=1e-2, n_buckets=200000, neg_samples_per_context=2, max_ngram=3)
+c = SGCorpus(corpus_file, v, learning_rate=args["alpha"], n_buckets=args["buckets"],
+        neg_samples_per_context=args["neg"], min_ngram=args["min_n"],
+        max_ngram=args["max_n"])
 
 println("Training Parameters:")
 @show c.params

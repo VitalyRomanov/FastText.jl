@@ -1,11 +1,6 @@
-# using Flux
-
-
-
 module FT
-# using JLD
 using JLD2
-using HDF5
+# using HDF5
 using LinearAlgebra
 import Printf
 
@@ -25,29 +20,19 @@ struct FastText
     max_ngram
 end
 
-# FastText(voc_s::Integer, dim_s::Integer, vocab::Vocab; bucket_size::Integer=2000) =
+# FastText(vocab::Vocab,
+#         dim_s::Int64;
+#         bucket_size::Int64=20000,
+#         min_ngram::Int64=3,
+#         max_ngram::Int64=5) =
 #     FastText(
-#         rand(voc_s, dim_s),
-#         rand(voc_s, dim_s),
-#         rand(bucket_size, dim_s),
-#         vocab
+#         begin; in=randn(dim_s, length(vocab)); in./=sqrt.(sum(in.^2, dims=1)); in; end,
+#         begin; out=randn(dim_s, length(vocab)); out./=sqrt.(sum(out.^2, dims=1)); out; end,
+#         begin; buckets=randn(dim_s, bucket_size); buckets./=sqrt.(sum(buckets.^2, dims=1)); buckets; end,
+#         vocab,
+#         min_ngram,
+#         max_ngram,
 #     )
-
-FastText(vocab::Vocab,
-        dim_s::Int64;
-        bucket_size::Int64=20000,
-        min_ngram::Int64=3,
-        max_ngram::Int64=5) =
-    FastText(
-        begin; in=randn(dim_s, length(vocab)); in./=sqrt.(sum(in.^2, dims=1)); in; end,
-        begin; out=randn(dim_s, length(vocab)); out./=sqrt.(sum(out.^2, dims=1)); out; end,
-        begin; buckets=randn(dim_s, bucket_size); buckets./=sqrt.(sum(buckets.^2, dims=1)); buckets; end,
-        # rand(dim_s, length(vocab)),
-        # rand(dim_s, bucket_size),
-        vocab,
-        min_ngram,
-        max_ngram,
-    )
 
 Base.getindex(m::FastText, word) = begin
     bucket_idx = get_bucket_ids(word, m.min_ngram, m.max_ngram, size(m.bucket)[2])
@@ -116,9 +101,6 @@ fb_hash(x, max_bucket) = begin
     return convert(Int64, h) % max_bucket + 1
 end
 
-# Flux.@functor FastText
-
-
 save_ft(m::FastText, path) = begin
     jldopen(path * ".jld2", "w") do file
         file["in"] = m.in
@@ -132,12 +114,7 @@ save_ft(m::FastText, path) = begin
         file["Vocab/totalWords"] = m.vocab.totalWords
     end
 end
-    # JLD.save(path, "in_m", m.in,
-    #             "out_m", m.out,
-    #             "bucket_m", m.bucket,
-    #             "vocab", m.vocab,
-    #             "min_ngram", m.min_ngram,
-    #             "max_ngram", m.max_ngram)
+
 
 load_ft(path) = begin
     ft = nothing
@@ -153,14 +130,7 @@ load_ft(path) = begin
     end
     return ft
 end
-# FastText(
-#     JLD.load(path, "in_m"),
-#     JLD.load(path, "out_m"),
-#     JLD.load(path, "bucket_m"),
-#     JLD.load(path, "vocab"),
-#     JLD.load(path, "min_ngram"),
-#     JLD.load(path, "max_ngram"),
-# )
+
 
 export_w2v(m::FastText, path) = begin
     sink = open(path, "w")

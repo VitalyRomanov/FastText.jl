@@ -28,8 +28,6 @@ module Vocabulary
         v.totalWords += 1
     end
 
-    UNK_TOKEN = "UNK"
-
     prune(v::Vocab, size::Integer, min_count::Integer) = begin
         sorted_words = sort(collect(v.counts), by=x->x[2], rev=true)
         sorted_words = sorted_words[1:min(length(sorted_words), size)]
@@ -45,11 +43,7 @@ module Vocabulary
             end
         end
 
-        # vocab[UNK_TOKEN] = length(vocab) + 1
-        # counts[UNK_TOKEN] = v.totalWords - totalWords
-        #
         Vocab(vocab, counts, v.totalWords)
-        # Vocab(vocab, counts, totalWords)
     end
 
     get_prob(v::Vocab, word) = get(v.counts, word, 0) / (v.totalWords + 1)
@@ -68,14 +62,3 @@ module Vocabulary
         println(io, "], totalWords=$(v.totalWords))")
     end
 end
-
-# v = Vocab()
-
-# learnVocab!(v, ["1", "2","3","4","5", "5"])
-
-# @show v
-# @show get_prob(v, "1")
-# @show get_prob(v, "j")
-
-# v = prune(v, 3)
-# @show v

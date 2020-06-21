@@ -1,12 +1,9 @@
-includet("LanguageTools.jl")
-includet("FastText.jl")
+include("FastText.jl")
 
-using .LanguageTools
 using .FT
 using StatsBase
 using Printf
 using SharedArrays
-# using LinearAlgebra
 
 # these parameters are not really meant to be set by users
 const MAX_SENT_LEN = 10000  # used to optimize memory usage
@@ -46,22 +43,8 @@ struct SGCorpus
     vocab
     params
     shared_params
-    shared_grads
-    shared_moments
     funct
     wPieces
-end
-
-struct moments
-    in_f_m
-    out_f_m
-    bucket_f_m
-    in_s_m
-    out_s_m
-    bucket_s_m
-    in_iter
-    out_iter
-    bucket_iter
 end
 
 struct ft_params
@@ -82,30 +65,6 @@ struct sg_tools
     in_voc
     discard
 end
-
-# were meant to be used with radam
-# init_moments(voc_size, n_dims, n_buckets) = begin
-#     in_f_m = SharedArray{Float32}(n_dims, voc_size)
-#     out_f_m = SharedArray{Float32}(n_dims, voc_size)
-#     bucket_f_m = SharedArray{Float32}(n_dims, n_buckets)
-#
-#     in_f_m .= 0.; out_f_m .= 0.; bucket_f_m .= 0.
-#
-#     in_s_m = SharedArray{Float32}(n_dims, voc_size)
-#     out_s_m = SharedArray{Float32}(n_dims, voc_size)
-#     bucket_s_m = SharedArray{Float32}(n_dims, n_buckets)
-#
-#     in_s_m .= 0.; out_s_m .= 0.; bucket_s_m .= 0.
-#
-#     in_iter = SharedArray{Float32,1}(voc_size)
-#     out_iter = SharedArray{Float32,1}(voc_size)
-#     buckets_iter = SharedArray{Float32,1}(n_buckets)
-#
-#     in_iter .= 1; out_iter .= 1; buckets_iter .= 1
-#
-#     moments(in_f_m, out_f_m, bucket_f_m, in_s_m, out_s_m,
-#         bucket_s_m, in_iter, out_iter, buckets_iter)
-# end
 
 init_shared_params(voc_size, n_dims, n_buckets) = begin
     in_shared = SharedArray{Float32}(n_dims, voc_size)
@@ -128,25 +87,6 @@ init_shared_params(voc_size, n_dims, n_buckets) = begin
     )
 end
 
-# using separate gradients is much slower than directly updating parameters
-# init_shared_grads(voc_size, n_dims, n_buckets) = begin
-#     in_shared = SharedArray{Float32}(n_dims, voc_size)
-#     out_shared = SharedArray{Float32}(n_dims, voc_size)
-#     bucket_shared = SharedArray{Float32}(n_dims, n_buckets)
-#
-#     in_shared .= 0.; out_shared .= 0.; bucket_shared .= 0.
-#
-#     atomic_in = SharedArray{Bool}(voc_size)
-#     atomic_out = SharedArray{Bool}(voc_size)
-#     atomic_buckets = SharedArray{Bool}(n_buckets)
-#
-#     atomic_in .= false; atomic_out .= false; atomic_buckets .= false
-#
-#     ft_params(
-#         in_shared, out_shared, bucket_shared,
-#         atomic_in, atomic_out, atomic_buckets
-#     )
-# end
 
 get_tokens!(c, line, token_buffer) = begin
     # subsampling procedure
@@ -179,114 +119,6 @@ get_tokens!(c, line, token_buffer) = begin
     nTokens = buffer_pos - 1
 end
 
-# _update_radam!(f_m, s_m, grad, par, i, iter, beta1, beta2, g, alpha, p_infty, n_dims) = begin
-#     # experiments were not successfull
-#     # the performance on BATS was smaller that SGD (possibly due to a bug)
-#     # https://medium.com/@lessw/new-state-of-the-art-ai-optimizer-rectified-adam-radam-5d854730807b
-#     d = 1
-#
-#     f_m_corr = 1 / (1 - beta1 ^ iter[i]);
-#     p = p_infty - 2 * iter[i] * beta2 ^ iter[i] / (1 - beta2 ^ iter[i])
-#     s_m_corr = 1 / (1 - beta2 ^ iter[i]);
-#     r = 1.
-#     if p > 4.
-#         r = sqrt((p - 4) * (p - 2) * p_infty / ((p_infty - 4) * (p_infty - 2) * p))
-#     end
-#
-#     while d <= n_dims
-#         s_grad = grad[d] * g
-#         f_m[d, i] = @. beta1 * f_m[d, i] + (1 - beta1) * s_grad
-#         s_m[d, i] = @. beta2 * s_m[d, i] + (1 - beta2) * s_grad ^ 2
-#         c_f_m = @. f_m[d, i] * f_m_corr
-#
-#         if p > 4.
-#             c_s_m = @. sqrt(s_m[d, i] * s_m_corr)
-#             par[d, i] -= @. r * alpha * c_f_m / (c_s_m + 1e-8)
-#         else
-#             par[d, i] -= @. c_f_m * alpha
-#         end
-#         d += 1
-#     end
-#     iter[i] += 1
-# end
-
-_update_grads!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
-                in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
-                in::SharedArray{Float32,2}, out::SharedArray{Float32,2},
-                in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
-                n_dims::Int64, act::Float32) = begin
-
-    # w::Float32 = -label .* (1 .- act) .* lr
-    w::Float32 = (act - label) .* lr
-
-    in_grad_flag[in_id] = true
-    out_grad_flag[out_id] = true
-
-    i = 1
-    while i <= n_dims
-        in_old = in[i, in_id]
-        out_old = out[i, out_id]
-        in_grad[i, in_id] += out_old .* w .* lr_factor
-        out_grad[i, out_id] += in_old .* w .* lr_factor
-        i += 1
-    end
-end
-
-# _update_grads2!(in_grad_flag::SharedArray{Bool,1}, out_grad_flag::SharedArray{Bool,1},
-#                 in_grad::SharedArray{Float32,2}, out_grad::SharedArray{Float32,2},
-#                 in::SharedArray{Float32,2}, out::SharedArray{Float32,2}, buffer::Array{Float32,1},
-#                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
-#                 n_dims::Int64, act::Float32) = begin
-#
-#     w::Float32 = -label .* (1 .- act) .* lr
-#
-#     in_grad_flag[in_id] = true
-#     out_grad_flag[out_id] = true
-#
-#     i = 1
-#     while i <= n_dims
-#         in_old = buffer[i]
-#         out_old = out[i, out_id]
-#         in_grad[i, in_id] -= out_old .* w .* lr_factor
-#         out_grad[i, out_id] -= in_old .* w
-#         i += 1
-#     end
-# end
-#
-# _update_grads_in!(in_grad_flag::SharedArray{Bool,1},
-#                 in_grad::SharedArray{Float32,2},
-#                 out::SharedArray{Float32,2},
-#                 in_id::Int64, out_id::Int64, label::Float32, lr::Float32, lr_factor::Float32,
-#                 n_dims::Int64, act::Float32) = begin
-#
-#     w::Float32 = -label .* (1 .- act) .* lr
-#
-#     in_grad_flag[in_id] = true
-#
-#     i = 1
-#     while i <= n_dims
-#         in_grad[i, in_id] += out[i, out_id] .* w .* lr_factor
-#         i += 1
-#     end
-# end
-#
-# _update_grads_out!(out_grad_flag::SharedArray{Bool,1},
-#                 out_grad::SharedArray{Float32,2},
-#                 buffer::Array{Float32,1},
-#                 out_id::Int64, label::Float32, lr::Float32,
-#                 n_dims::Int64, act::Float32) = begin
-#
-#     w::Float32 = -label .* (1 .- act) .* lr
-#
-#     out_grad_flag[out_id] = true
-#
-#     i = 1
-#     while i <= n_dims
-#         out_grad[i, out_id] += buffer[i] .* w
-#         i += 1
-#     end
-# end
-
 _activation(buffer, out, out_id, n_dims) = begin
     a::Float32 = 0.
     i = 1
@@ -295,7 +127,6 @@ _activation(buffer, out, out_id, n_dims) = begin
         i += 1
     end
     sigm(a)
-    # sigm(dot(buffer, @view out[:, out_id]))
 end
 
 """
@@ -318,17 +149,9 @@ _compute_in!(buffer, in_, b_, in_id, wPieces, n_dims) = begin
         @inbounds buffer[i] *= factor
         i += 1
     end
-
-    # buffer .= @views in_[:, in_id]
-    # for b_id in b_ids
-    #     buffer .+= @views b_[:, b_id]
-    # end
-    # buffer .*= factor
-
-    # buffer .= @views (in_[:, in_id] .+ sum(b_[:, b_ids], dims=2)[:]) .* factor
 end
 
-apply_grad(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
+apply_grad!(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
             w::Float32, n_dims::Int32) = begin
     d = 1
     while d <= n_dims
@@ -337,7 +160,7 @@ apply_grad(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
     end
 end
 
-update_buf(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
+update_buf!(params::SharedArray{Float32,2}, id::Int64, update::Array{Float32,1},
             w::Float32, n_dims::Int32) = begin
     d = 1
     while d <= n_dims
@@ -355,12 +178,8 @@ _process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
     in_id = tokens[pos]
     if in_id == -1; return loss, processed; end
 
-    n_buckets = wPieces[1, in_id] #length(buckets)
     # buckets = wPieces[in_id]
-
-    # prepare to iterate buckets
-    # bucket_ind = 1
-
+    n_buckets = wPieces[1, in_id] #length(buckets)
 
     # consts
     POS_LBL::Float32 = 1; NEG_LBL::Float32 = 0.
@@ -368,15 +187,9 @@ _process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
     # define window region
     win_pos = max(1, pos-win_size); win_pos_end = min(n_tok, pos+win_size)
 
-    # f.compute_in!(buffer, in_id, buckets)
     f.compute_in!(buffer, in_id)
 
-    # init
     act = 0.
-
-
-    lr_factor::Float32 = 1. #/ (1 + length(buckets))
-
 
     while win_pos <= win_pos_end
         @inbounds out_id = tokens[win_pos]
@@ -402,90 +215,38 @@ _process_context(in_, out_, buckets_, buffer, buffer_out, f, wPieces, win_size,
             loss += - log(lbl_act)
             processed += 1
 
-            g = (act - lbl) * lr # disabled for Radam
+            g = (act - lbl) * lr
 
-            update_buf(out_, out_id, buffer_out, g, n_dims)
-            ## buffer_out .+= @views c.shared_params.out[:, out_id] .* g
+            update_buf!(out_, out_id, buffer_out, g, n_dims)
 
-            apply_grad(out_, out_id, buffer, g, n_dims) # disabled for Radam
-            # _update_radam!(moments_.out_f_m, moments_.out_s_m, buffer, out_, out_id, moments_.out_iter, 0.9, 0.999, g, lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad!(out_, out_id, buffer, g, n_dims)
             neg_ind += 1
         end
 
-        apply_grad(in_, in_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-        # _update_radam!(moments_.in_f_m, moments_.in_s_m, buffer_out, in_, in_id, moments_.in_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+        dummy_lr::Float32 = 1.0
+        apply_grad!(in_, in_id, buffer_out, dummy_lr, n_dims)
         bucket_ind = 1
         while bucket_ind <= n_buckets
             @inbounds b_id = wPieces[bucket_ind + 1, in_id]
             ## b_id = buckets[bucket_ind]
-            apply_grad(buckets_, b_id, buffer_out, lr_factor, n_dims) # disabled for Radam
-            # _update_radam!(moments_.bucket_f_m, moments_.bucket_s_m, buffer_out, buckets_, b_id, moments_.bucket_iter, 0.9, 0.999, 1., lr, 2 / (1 - 0.999) - 1, n_dims)
+            apply_grad!(buckets_, b_id, buffer_out, dummy_lr, n_dims)
             bucket_ind += 1
         end
         win_pos += 1
     end
 
-    # while win_pos <= win_pos_end
-    #     out_id = tokens[win_pos]
-    #     if win_pos == pos || out_id == -1; win_pos += 1; continue; end
-    #
-    #     # skip updating gradients if activation is too strong
-    #
-    #     act = f.activation(buffer, out_id)
-    #     # if act > 0.99; processed += 1; win_pos += 1; continue; end
-    #     # if act < 0.01; processed += 1; loss += 5.; win_pos += 1; continue; end
-    #     loss += -log(act)
-    #     processed += 1
-    #
-    #     # f.update_grad_out!(out_id, buffer, POS_LBL, lr, act)
-    #     f.update_grad_in!(in_id, out_id, POS_LBL, lr, lr_factor, act)
-    #
-    #     while bucket_ind <= n_buckets
-    #         b_id = buckets[bucket_ind]
-    #         f.update_grad_b!(b_id, out_id, POS_LBL, lr, lr_factor, act)
-    #         bucket_ind += 1
-    #     end
-    #     win_pos += 1
-    # end
-    #
-    # neg_ind = 1
-    # bucket_ind = 1
-    #
-    # while neg_ind <= n_neg
-    #     neg_out_id = f.sample_neg()
-    #
-    #     act = f.activation(buffer, neg_out_id)
-    #     # if act < 0.01; processed += 1; neg_ind += 1; continue; end
-    #     # if act > 0.99; processed += 1; loss += 5.; neg_ind += 1; continue; end
-    #     loss += -log(1-act)
-    #     processed += 1
-    #
-    #     # f.update_grad_out!(neg_out_id, buffer, NEG_LBL, lr, act)
-    #     f.update_grad_in!(in_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
-    #
-    #     while bucket_ind <= n_buckets
-    #         b_id = buckets[bucket_ind]
-    #         f.update_grad_b!(b_id, neg_out_id, NEG_LBL, lr, lr_factor, act)
-    #         bucket_ind += 1
-    #     end
-    #     neg_ind += 1
-    # end
     loss, processed
 end
 
+# can switch to precomputed table for better performance
 sigm(x) = (1 ./ (1 + exp.(-x)))
 
 bisect_left(arr, val, start_, end_) = begin
     if start_ == end_
         return start_
     end
-    # fast check
-    # if val < arr[1]
-    #     return 0
-    # end
 
     middle = (end_ - start_) ÷ 2 + start_
-    # println(start_, " ", end_, " ", middle)
     if val <= arr[middle]
         return bisect_left(arr, val, start_, middle)
     else
@@ -519,68 +280,20 @@ init_negative_sampling_bisect(v) = begin
     end
 end
 
-init_negative_sampling(v) = begin
-    ordered_words = sort(collect(v.vocab), by=x->x[2])
-    probs = zeros(length(ordered_words))
-    reverseMap = Dict()
-    for (w, id) in ordered_words
-        probs[id] = v.counts[w] / v.totalWords
-        reverseMap[id] = w
-    end
-    probs .^= 3/4
-    probs ./= sum(probs)
-    # # # (size) -> map(id -> reverseMap[id], StatsBase.sample(collect(1:length(probs)), StatsBase.Weights(probs), size))
-    # indices = collect(1:length(probs))
-    # probs_ = StatsBase.Weights(probs)
-    # # # (size) -> StatsBase.sample(indices, probs_, size)
-    # # # (size) -> map(id -> reverseMap[id], StatsBase.sample(indices, size))
-    # () -> StatsBase.sample(indices, probs_)
-
-    factor = 10^abs(floor(minimum(log10.(probs)))-1)
-    probs .*= factor
-    freqs = convert.(Int64, round.(probs))
-    total = sum(freqs)
-    lookup = zeros(Int64, total)
-    # @show total
-    lookup_pos = 1
-    for (ind, count) in enumerate(freqs)
-        for i in 1:count
-            lookup[lookup_pos] = ind
-            lookup_pos += 1
-        end
-    end
-    # Base.Sort.searchsortedfirst
-    # @show lookup
-    () -> begin
-        ind = abs(rand(Int64)) % total + 1
-        @inbounds lookup[ind]
-    end
-end
-
-
-get_scheduler(c) = begin
+get_scheduler(c; increase_factor=10.) = begin
     scheduler = nothing
     if total_lines > 20000
         scheduler = (iter) -> begin
             middle = total_lines ÷ 2
             frac = abs(iter - middle) / (middle)
-            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * 10
+            frac * c.params.learning_rate + (1 - frac) * c.params.learning_rate * increase_factor
         end
     else
         scheduler = (iter) -> c.params.learning_rate
     end
-    scheduler = (iter) -> c.params.learning_rate
-    scheduler
+    # scheduler = (iter) -> c.params.learning_rate
+    # scheduler
 end
-
-# get_context_processor(c::SGCorpus, sample_neg, get_buckets, w2id) = begin
-#     shared_params = c.shared_params
-#     shared_grads = c.shared_grads
-#     win_size = c.params.win_size
-#     n_dims = c.params.n_dims
-#     buffer = zeros(Float32, n_dims)
-#     (tokens, pos, lr) -> process_context(buffer, sample_neg, get_buckets, w2id, shared_params, shared_grads, win_size, lr, n_dims, tokens, pos)
-# end
 
 get_context_processor(c::SGCorpus) =
     (tokens, n_tok, pos, lr) -> _process_context(
@@ -601,78 +314,16 @@ compute_lapse(start, ind) = begin
     passed_seconds, time_left
 end
 
-_apply_g!(atomic, par, grad, n_dims, alpha) = begin
-    n = length(atomic)
-
-    i = 1
-    while i <= n
-        if atomic[i] == false; i += 1; continue; end
-        d = 1
-        while d <= n_dims
-            par[d, i] -= grad[d, i] * alpha
-            grad[d, i] = 0.
-            d += 1
-        end
-        atomic[i] = false
-        i += 1
-    end
-end
-
-
-apply_grads(c, alpha) = begin
-    _apply_g!(c.shared_grads.atomic_in, c.shared_params.in,
-                c.shared_grads.in, c.params.n_dims, alpha)
-    _apply_g!(c.shared_grads.atomic_out, c.shared_params.out,
-                c.shared_grads.out, c.params.n_dims, alpha)
-    _apply_g!(c.shared_grads.atomic_buckets, c.shared_params.buckets,
-                c.shared_grads.buckets, c.params.n_dims, alpha)
-    # c.shared_params.in .+= c.shared_grads.in
-    # c.shared_params.out .+= c.shared_grads.out
-    # c.shared_params.buckets .+= c.shared_grads.buckets
-    #
-    # c.shared_grads.in .= 0.
-    # c.shared_grads.out .= 0.
-    # c.shared_grads.buckets .= 0.
-    #
-    # c.shared_grads.atomic_in .= false
-    # c.shared_grads.atomic_out .= false
-    # c.shared_grads.atomic_buckets .= false
-end
-
-
-check_weights(c) = begin
-    act = sum(c.shared_params.in)
-    if isnan(act) || isinf(act)
-        throw("Weights spoiled")
-    end
-    act = sum(c.shared_params.out)
-    if isnan(act) || isinf(act)
-        throw("Weights spoiled")
-    end
-    act = sum(c.shared_params.buckets)
-    if isnan(act) || isinf(act)
-        throw("Weights spoiled")
-    end
-end
-
 
 SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
         win_size=5, learning_rate=0.01, neg_samples_per_context=15,
         subsampling_parameter=1e-4, batch_size=1) = begin
 
     shared_params = init_shared_params(length(vocab), n_dims, n_buckets)
-    shared_grads = init_shared_grads(length(vocab), n_dims, n_buckets)
-    shared_moments = init_moments(length(vocab), n_dims, n_buckets)
 
     in_ = shared_params.in
     out_ = shared_params.out
     b_ = shared_params.buckets
-    in_g = shared_grads.in
-    out_g = shared_grads.out
-    b_g = shared_grads.buckets
-    in_g_f = shared_grads.atomic_in
-    out_g_f = shared_grads.atomic_out
-    b_g_f = shared_grads.atomic_buckets
 
     global MAX_SENT_LEN, MAX_SUBWORDS
 
@@ -689,7 +340,6 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     activation = (buffer, out_id) -> _activation(buffer, out_, out_id, n_dims)
     w2id = (w) -> get(vocab.vocab, w, -1)
     get_buckets = (w) -> get_bucket_ids(w, min_ngram, max_ngram, n_buckets)
-    # neg_sampler = init_negative_sampling(vocab)
     neg_sampler = init_negative_sampling_bisect(vocab)
     in_voc = (w) -> w in keys(vocab.vocab)
     # discard_token = (w) -> rand() < (1 - sqrt(vocab.totalWords * subsampling_parameter / vocab.counts[w])) # this discarding procedure is suggested in the original word2vec paper
@@ -701,13 +351,13 @@ SGCorpus(file, vocab; n_dims=300, n_buckets=10000, min_ngram=3, max_ngram=5,
     funct = sg_tools(compute_in!, activation,
                 w2id, get_buckets, neg_sampler, in_voc, discard_token)
 
-    SGCorpus(file, vocab, params, shared_params, shared_grads, shared_moments, funct, wPieces)
+    SGCorpus(file, vocab, params, shared_params, funct, wPieces)
 end
 
 
 populate_subwords!(vocab, wPieces, min_ngram, max_ngram, n_buckets) = begin
     max_subwords = size(wPieces)[1] - 1 # first item stores count
-    # init
+    # init to -1
     wPieces .= -1
     for (w, id) in collect(v.vocab)
         buckets = get_bucket_ids(w, min_ngram, max_ngram, n_buckets)

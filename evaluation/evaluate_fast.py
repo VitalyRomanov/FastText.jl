@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from scipy.stats import spearmanr, pearsonr
 import sys
+from sklearn.neighbors import KDTree
+
 
 QS_PATH = './analogy_questions/'
 QS_FILE_TT = QS_PATH + 'tat_analogies.txt'
@@ -39,12 +41,15 @@ def answer_analogy_questions(analogies_path, embeddings, words2ids, top_k):
     results = []
     group = []
     print('group_name', '1nn%', '10nn%', sep="\t")
+
+    index = KDTree(embeddings, )
+
     # answer questions, combining them in groups
     for line in all_questions:
         if line[0] == ':':
             if group:  # if group is not empty, evaluate and print results
                 results[-1].extend(
-                    answer_questions_in_group(group, embeddings, words2ids, top_k))
+                    answer_questions_in_group(group, embeddings, words2ids, top_k, index))
                 print(results[-1][0], '%.2f' % results[-1]
                       [1], '%.2f' % results[-1][2], sep="\t")
                 group = []
@@ -53,7 +58,7 @@ def answer_analogy_questions(analogies_path, embeddings, words2ids, top_k):
         else:
             group.append(line)
     # handle last group's results
-    results[-1].extend(answer_questions_in_group(group, embeddings, words2ids, top_k))
+    results[-1].extend(answer_questions_in_group(group, embeddings, words2ids, top_k, index))
     print(results[-1][0], '%.2f' % results[-1]
           [1], '%.2f' % results[-1][2], sep="\t")
     # print overall results
@@ -63,17 +68,14 @@ def answer_analogy_questions(analogies_path, embeddings, words2ids, top_k):
 
 
 # Answer analogy questions in one group
-def answer_questions_in_group(questions, embeddings, words2ids, top_k):
+def answer_questions_in_group(questions, embeddings, words2ids, top_k, index):
     targets = np.ndarray(shape=(len(questions), embeddings.shape[1]), dtype=np.float32)
     for i, q in enumerate(questions):  # [a,b,c]. d = (b - a) + c
         # target embeddings - closest points to question answers
         targets[i, :] = (embeddings[words2ids[q[1]], :] - embeddings[words2ids[q[0]], :]) \
                         + embeddings[words2ids[q[2]], :]
-    distances = np.dot(targets, embeddings.T)
-    # number of nearest neighbors we are interested in, +3 to account for question words, which we will ignore then
+    
     num_best = top_k + 3
-    # partition instead of sorting as it is way faster
-    partitioned = np.argpartition(-distances, num_best, axis=1)[:, : num_best]
     # number of correct answers as a 1st nearest neighbor / in a 10-nearest neighbors range
     num_1nn = 0
     num_10nn = 0
@@ -81,10 +83,12 @@ def answer_questions_in_group(questions, embeddings, words2ids, top_k):
     for i, q in enumerate(questions):
         # convert question words to ids
         q_ids = [words2ids[w] for w in q]
-        # sort partition based on distances
-        p_i = partitioned[i,:]
-        d_i = distances[i,:]
-        nearest = p_i[np.argsort(-d_i[p_i])]
+
+        target = targets[i, :].reshape(1, -1)
+        nns = index.query(target, k = num_best * 10, return_distance = False).ravel()
+        distances = (target @ embeddings[nns, :].T).ravel()
+
+        nearest = nns[np.argsort(-distances)][:num_best]
         # filter out question words and crop up to top_k
         nearest_filtered = [w for w in nearest if w not in q_ids[:3]][:top_k]
 

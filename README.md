@@ -1,4 +1,12 @@
-Lessons
+# FastText.jl
+
+Reimplementation of FastText in pure Julia. Fully functional except:
+- cannot read FastText binary format
+- cannot write FastText binary format
+
+`julia train.jl --epochs 10 --min_n 3 --max_n 5 --buckets 2000 --alpha 1e-2 --neg 5 --voc 2000000 --min_voc 5 wiki_00`
+
+## Lessons Learned
 
 - Prefer column wise indexing
 - `for i = 1:100` is slower than while loop because it allocates memory
@@ -19,5 +27,3 @@ Lessons
 - do not update central word params immediately!!! gradients will oscillate
 - gradients clipped only for negative samles, not for positive 
 
-
-NEED TO TEST VECTORS!!
